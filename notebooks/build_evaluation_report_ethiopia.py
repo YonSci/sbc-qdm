@@ -635,6 +635,20 @@ rain than the full bounding box's average. The min/max range is identical
 to the full-domain figures (6.4/1432.3mm raw, 0.01/1305.4mm corrected),
 since those extremes happen to fall on pixels that are inside Ethiopia's
 border anyway.
+
+**On that corrected maximum (1305mm, and the daily 257mm/day maximum behind
+it):** it's traced to an exact pixel/day in `evaluation_report.ipynb`'s
+Section 8.1 -- and that pixel (lat 7.875N, lon 47.125E, Ethiopia's Somali
+Region near the Somalia border) is inside Ethiopia's boundary, so that
+investigation applies directly here, not just to the full-domain report.
+The short version: raw ECMWF's 99th-percentile October rainfall at that
+pixel (~17mm) is far below CHIRPS' own 99th percentile there (~82mm) -- a
+real, large model bias -- but `numpy.interp`'s clamping behavior beyond the
+last quantile node (0.99) applies the same flat ~4.7x adjustment factor to
+*any* raw value past that threshold, regardless of how far into the tail it
+sits. An already-outlier ensemble member (54.5mm, vs ~21mm for the
+next-highest member) gets pushed to 257mm -- nearly double CHIRPS' own
+134mm historical maximum at that pixel.
 """
 )
 

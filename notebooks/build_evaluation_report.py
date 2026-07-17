@@ -314,9 +314,8 @@ percentile, the corrected line diverges *above* both the 1:1 line and the raw
 forecast -- QDM is amplifying extreme values beyond what either the raw model
 or CHIRPS itself has ever produced. This matches the elevated maximum seen in
 the operational 2026 corrected forecast (257 mm/day corrected vs 123 mm/day
-raw). **If this output feeds anything extreme-sensitive (flood risk, design
-storms), do not treat the upper tail of the corrected distribution as
-reliable without further investigation.**
+raw) -- **traced to an exact mechanism, not just a pattern in aggregate**,
+in Section 8 below.
 """
 )
 
@@ -655,6 +654,81 @@ amplification seen in the pooled daily Q-Q plot (Section 3.1): that finding
 is about the *pooled daily distribution* across all pixels/years/members,
 while this is a single year's ensemble-mean seasonal total, a different
 aggregation entirely. Don't over-generalize between the two.
+"""
+)
+
+md(
+    """
+### 8.1 Investigating the daily extreme-value amplification
+
+Section 3.1's Q-Q plot flagged that corrected quantiles exceed both raw and
+CHIRPS above ~Q95. Rather than leave that as an aggregate pattern, here's the
+exact mechanism, traced to the single daily value driving `corrected_2026`'s
+**257 mm/day maximum** (see `output/qdm_trained.nc`, produced by
+`sbc-qdm train`, for the per-pixel/month adjustment factors used below).
+"""
+)
+code(
+    """
+# locate the exact pixel/day/member behind corrected_2026's maximum
+flat_idx = int(corrected_2026.argmax())
+idx = np.unravel_index(flat_idx, corrected_2026.shape)
+extreme = {corrected_2026.dims[i]: corrected_2026[corrected_2026.dims[i]].values[idx[i]] for i in range(len(idx))}
+print("extreme value location:", extreme, "=", float(corrected_2026.max()), "mm")
+
+raw_val = float(raw_2026.sel(lat=extreme["lat"], lon=extreme["lon"], method="nearest").sel(time=extreme["time"], realization=extreme["realization"]))
+print("raw value at that exact location:", raw_val, "mm")
+
+raw_day = raw_2026.sel(lat=extreme["lat"], lon=extreme["lon"], method="nearest").sel(time=extreme["time"])
+print("full raw ensemble at that pixel/day (25 members):", np.sort(raw_day.values))
+"""
+)
+code(
+    """
+# the trained quantile-mapping curve for this pixel/month
+qdm_trained = xr.open_dataset(OUTPUT_DIR / "qdm_trained.nc")
+month = pd.Timestamp(extreme["time"]).month
+af_pixel = qdm_trained["af"].sel(month=month, lat=extreme["lat"], lon=extreme["lon"], method="nearest")
+hist_q_pixel = qdm_trained["hist_q"].sel(month=month, lat=extreme["lat"], lon=extreme["lon"], method="nearest")
+
+print("top 3 quantile nodes:", af_pixel["quantiles"].values[-3:])
+print("af at those nodes:   ", af_pixel.values[-3:])
+print("hist_q (mm) at those nodes:", hist_q_pixel.values[-3:])
+print()
+top_af = float(af_pixel.isel(quantiles=-1))
+top_hist_q = float(hist_q_pixel.isel(quantiles=-1))
+print(f"raw value {raw_val:.1f}mm exceeds the top training quantile node ({top_hist_q:.1f}mm at tau=0.99)")
+print(f"-> clamped to tau=0.99, af={top_af:.3f} -> predicted corrected = {raw_val:.1f} * {top_af:.3f} = {raw_val*top_af:.1f}mm")
+"""
+)
+md(
+    """
+**The mechanism, precisely:** at this pixel (Ethiopia's Somali Region, near
+the Somalia border) in October, CHIRPS' own historical 99th-percentile daily
+rainfall is **~82mm**, while raw ECMWF's 99th percentile at the same
+pixel/month is only **~17mm** -- a genuine, large model bias at the extreme
+tail (raw ECMWF's own historical max there, 61mm, is under half of CHIRPS'
+historical max of 134mm). That's a real deficiency worth correcting.
+
+The problem is *how* the correction is applied beyond the last quantile node:
+`numpy.interp` (used to map a raw value to its quantile, then that quantile to
+an adjustment factor) clamps rather than extrapolates, so **any** raw value
+above the 99th-percentile training threshold gets the *same* flat ~4.7x
+factor, regardless of how far into the tail it sits. Ensemble member 22's raw
+forecast for this pixel/day happened to be an outlier within its own
+ensemble (54.5mm, vs a next-highest member around 21mm) -- itself already
+over 3x the model's typical 99th-percentile value. Applying the flat 4.7x
+factor to that already-unusual value, rather than a smoothly graduated one,
+produces 257mm -- nearly double even CHIRPS' own 134mm historical maximum at
+this pixel.
+
+**Practical takeaway:** the correction is reproducing a real, large model
+bias at the tail, not fabricating one -- but the flat-beyond-the-last-node
+behavior means it can overshoot the observational record itself when applied
+to an already-extreme raw ensemble member. A future improvement worth
+considering: more quantile nodes concentrated in the tail (e.g. 0.99, 0.995,
+0.999) rather than relying on `nquantiles=50` equally-spaced nodes topping
+out at 0.99, so the mapping is graduated rather than flat beyond it.
 """
 )
 
