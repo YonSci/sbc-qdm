@@ -78,14 +78,40 @@ pip install -e .
 or with plain pip (`environment.yml`'s dependency list mirrors `pyproject.toml`):
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-Run the tests (they read real files under `data/`, no synthetic fixtures):
+The `geo` extra (`geopandas`, `shapely`) is only needed for
+`sbc_qdm.verify.boundary` (country-shapefile clipping, e.g. the
+Ethiopia-only evaluation notebook) -- not the core CLI pipeline:
+
+```bash
+pip install -e ".[dev,geo]"
+```
+
+## Testing
 
 ```bash
 pytest tests/ -v
 ```
+
+Two kinds of tests, split by whether they need the real (uncommitted, ~2.4GB)
+`data/` directory:
+
+- `tests/test_verify.py` -- synthetic, hand-constructed arrays with known
+  expected outputs, covering all 9 `verify/` modules. No dependency on
+  `data/`, runs in a couple of seconds.
+- `tests/test_io_preprocess.py` / `tests/test_regrid_qdm.py` -- integration
+  checks against the real project data files, marked `requires_data` (see
+  `pyproject.toml`'s `[tool.pytest.ini_options]`). Skip these with:
+
+  ```bash
+  pytest -m "not requires_data" -v
+  ```
+
+**CI** (`.github/workflows/tests.yml`) runs exactly that CI-safe subset on
+every push/PR, since `data/` isn't available on the runner. Locally, with
+`data/` present, just run `pytest tests/ -v` for the full suite.
 
 ## Pipeline stages
 
