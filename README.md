@@ -86,6 +86,10 @@ never scoring a year the model was trained on.
 Full breakdown, including where the correction *doesn't* help, in
 [Full results](#full-results) below.
 
+![Raw vs corrected mean bias against CHIRPS](docs/figures/bias_maps.png)
+
+*Raw ECMWF (left) vs. QDM-corrected (right) mean daily bias against CHIRPS, same shared diverging colorbar (blue = too dry, red = too wet, over the 33-year leave-one-year-out cross-validation).*
+
 > **A note on timing**: these numbers reflect the pipeline's original
 > 50-quantile-node grid. A fix for extreme-tail amplification (see
 > [Known limitations](#known-limitations)) changes the trained model
@@ -417,6 +421,19 @@ The correction reduces mean bias by roughly an order of magnitude and
 corrects ECMWF's tendency to rain too often (too lightly), with a positive
 CRPS skill score under honest (not in-sample) cross-validation.
 
+<table>
+<tr>
+<td width="50%"><img src="docs/figures/wet_day_frequency.png" alt="Raw vs corrected wet-day frequency"></td>
+<td width="50%"><img src="docs/figures/crpss.png" alt="CRPS skill score map"></td>
+</tr>
+</table>
+
+*Left: ECMWF rains far too often, too lightly — QDM corrects wet-day frequency down toward CHIRPS' ~15%. Right: CRPSS map — red where the correction improves probabilistic skill over raw, blue where it hurts.*
+
+![Month-by-month raw vs. corrected vs. 1993-2025 CHIRPS climatology for the 2026 forecast](docs/figures/monthly_2026_comparison.png)
+
+*The live 2026 operational forecast, month by month: raw ECMWF, QDM-corrected, and the 33-year CHIRPS climatology for comparison. From `notebooks/evaluation_report.ipynb` Section 9.*
+
 **Full scientific evaluation suite** (`output/evaluation/`, domain means, raw vs corrected):
 
 | Scale | Metric | Raw | Corrected |
@@ -466,6 +483,15 @@ CRPS skill score under honest (not in-sample) cross-validation.
   nearly everywhere, but its absolute probability calibration is still poor
   in the central/southern part of the domain even where discrimination is fine.
 
+<table>
+<tr>
+<td width="50%"><img src="docs/figures/spell_distributions.png" alt="Wet/dry spell length distributions"></td>
+<td width="50%"><img src="docs/figures/jjas_probabilistic_skill.png" alt="JJAS probabilistic skill maps"></td>
+</tr>
+</table>
+
+*Left: wet/dry spell-length distributions — QDM leaves persistence essentially untouched. Right: JJAS probabilistic skill (RPSS/BSS/ROC) is spatially heterogeneous — good discrimination almost everywhere, but calibration lags in the central-south.*
+
 ## Known limitations
 
 Being upfront about what this pipeline does *not* fix, rather than leaving
@@ -480,6 +506,10 @@ it implicit:
 - **Anomaly correlation (ACC) drops slightly after correction** (0.242 ->
   0.204, JJAS-total) — a real, small trade-off alongside the much larger
   calibration gains.
+
+![Q-Q plot: corrected quantiles diverging above CHIRPS and raw ECMWF beyond ~Q95](docs/figures/qq_plot.png)
+
+*Corrected quantiles track CHIRPS closely through most of the distribution, then overshoot both raw ECMWF and CHIRPS' own observed range above ~Q95 — the extreme-tail amplification explained below.*
 
 **Extreme-tail amplification** (the most involved issue, worth its own
 explanation): Q95+ quantiles get amplified *beyond* both the raw forecast
