@@ -8,6 +8,7 @@ dist/
 venv/
 output/
 *.nc.tmp
+*.log
 
 # Real CHIRPS/ECMWF source data (~2.4GB) -- not committed; see README for
 # where to obtain it and config/domain.yaml for expected paths.
