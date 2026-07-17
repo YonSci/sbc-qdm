@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+output/
+*.nc.tmp
+
+# Real CHIRPS/ECMWF source data (~2.4GB) -- not committed; see README for
+# where to obtain it and config/domain.yaml for expected paths.
+data/
+
+# Claude Code local session state
+.claude/
+
+# Jupyter
+.ipynb_checkpoints/

@@ -1,0 +1,444 @@
+# sbc-qdm
+
+Quantile Delta Mapping (QDM) bias correction of ECMWF SEAS5 seasonal precipitation
+forecasts against CHIRPS observations, for a Horn of Africa domain
+(lat 3.5-14.5N, lon 33.5-47.5E).
+
+The forecast is a single May-initialization seasonal run (51-day lead into
+October), reforecast/hindcast years 1993-2025, with 2026 as the live
+operational forecast to be corrected. CHIRPS provides the observational
+reference at 0.25 deg; ECMWF is regridded onto CHIRPS' grid before correction.
+
+## Data
+
+| Dataset | Location | Grid | Notes |
+|---|---|---|---|
+| CHIRPS (reference) | `data/chirps_pr_et/et_chirps_pr_r25_1993_2025.nc` | 0.25 deg, 48x60 | Daily precip, mm/day, 1993-2025, pre-merged from per-year `*_clip.nc` files |
+| ECMWF (forecast) | `data/ecmwf/ecmwf_{year}05_d01.nc` | 1 deg, 12x15 | One file per year, May-init, `tp` variable in metres, **accumulated since forecast start** |
+
+### Data quirks worth knowing before touching this pipeline
+
+- **ECMWF `tp` is accumulated-since-init, not a per-day value**, despite its
+  `GRIB_stepType` metadata saying "instant". `preprocess.deaccumulate()`
+  handles this. If new ECMWF files are ever added, sanity-check with
+  `preprocess.diagnose_accumulation()` before trusting the assumption.
+- **Ensemble size changes at the 2017 boundary**: ECMWF hindcasts (1993-2016)
+  have 25 members; operational/near-real-time years (2017+) have 51.
+  `pipeline.prepare_target_year()` clips 2017+ forecasts back down to 25
+  members (`config/domain.yaml: ensemble.hindcast_n_members`) so corrected
+  output has a consistent ensemble size across years. During training, the
+  size mismatch is handled by NaN-padding + `skipna=True` quantile/adapt_freq
+  calls -- verified harmless, no special-casing needed there.
+- **CHIRPS' merged reference can have year-sized gaps** if a source download
+  was incomplete (this happened for 2017; the `.nc.part` file for 2017 was
+  never merged in). `pipeline.prepare_hindcast()` intersects CHIRPS' and
+  ECMWF's time indices rather than assuming full coverage, so a gap just
+  drops those dates from both sides instead of crashing. If you add a
+  missing year's CHIRPS data later, rebuild the merged reference (see
+  "Rebuilding the CHIRPS reference" below) and rerun cross-validation --
+  every fold's training pool changes when a year is added, so cached
+  `output/loyo_folds/*.nc` results must be regenerated, not just appended to.
+
+## Repository layout
+
+```
+config/domain.yaml          Paths, bbox, ensemble/QDM parameters
+src/sbc_qdm/
+  config.py                 Loads domain.yaml, resolves paths
+  io.py                     load_chirps_reference(), load_ecmwf_year/hindcast/operational()
+  preprocess.py              De-accumulation, unit conversion, land/water masking
+  regrid.py                  Bilinear ECMWF -> CHIRPS regrid (dask-chunked)
+  qdm.py                     Per-month multiplicative QDM: train/apply/cross-validate/operational
+  pipeline.py                 Composes io -> preprocess -> regrid into ready-to-use arrays
+  validate.py                 Bias maps, wet-day frequency, CRPS/CRPSS, rank histogram
+  viz.py                       Spatial/distributional figures from a diagnostics dataset
+  verify/                       Full scientific evaluation suite (see "sbc-qdm evaluate" below)
+    aggregate.py                 Monthly/JJAS aggregation, climatology, tercile categories
+    deterministic.py             MBE, MAE, PBIAS, RMSE, SD ratio, CV ratio
+    distributions.py             Q-Q/ECDF/PDF, quantile bias, wet-day frequency bias
+    spells.py                    Wet/dry spell length distributions
+    skill.py                     ACC, Spearman ACC, RMSESS, interannual variability ratio
+    probabilistic.py             CRPS/CRPSS, RPSS, Brier Score/BSS, ROC
+    calibration.py                Reliability diagrams, spread-skill ratio
+    spatial.py                    Spatial pattern correlation, spatial RMSE
+    viz.py / run.py                Figures + orchestration for the whole suite
+  cli.py                       train | cross-validate | cross-validate-fold | apply | validate | plot-diagnostics | evaluate
+tests/                        Tests run against the real data files in data/
+output/                       All CLI outputs land here, including output/figures/ and output/evaluation/ (see "Outputs" below)
+```
+
+## Setup
+
+```bash
+conda env create -f environment.yml
+conda activate sbc-qdm
+pip install -e .
+```
+
+or with plain pip (`environment.yml`'s dependency list mirrors `pyproject.toml`):
+
+```bash
+pip install -e .
+```
+
+Run the tests (they read real files under `data/`, no synthetic fixtures):
+
+```bash
+pytest tests/ -v
+```
+
+## Pipeline stages
+
+The correction pipeline has four conceptual stages, implemented across
+`io.py` / `preprocess.py` / `regrid.py` / `qdm.py`, and composed for you by
+`pipeline.py`:
+
+1. **Load** -- `io.load_chirps_reference()` reads the merged CHIRPS record;
+   `io.load_ecmwf_year/hindcast/operational()` read ECMWF file(s) and
+   reshape the forecast-lead axis onto real calendar dates (`valid_time`),
+   so a `time.dayofyear`-style grouping works naturally across hindcast years.
+2. **Harmonize** -- `preprocess.py` de-accumulates ECMWF `tp`, converts
+   m -> mm/day, and masks both datasets to CHIRPS' land pixels
+   (`preprocess.build_land_mask` / `apply_mask`).
+3. **Regrid** -- `regrid.regrid_to_chirps()` bilinearly interpolates ECMWF's
+   1 deg grid onto CHIRPS' 0.25 deg grid, dask-chunked to stay memory-bounded.
+4. **Correct** -- `qdm.py` fits one multiplicative QDM per calendar month,
+   pooling all ensemble members and hindcast years as the training sample
+   (`xsdba.processing.adapt_freq` first corrects wet-day frequency mismatch).
+   Four entry points cover the two things you actually want to do:
+   - `train_qdm(ref, hist, cfg)` / `apply_qdm(sim, trained, cfg)` -- fit and
+     apply directly, if you're scripting something custom.
+   - `leave_one_year_out(ref, hist, cfg)` -- cross-validation: train on
+     all-but-one hindcast year, correct that year, repeat. Used to judge
+     whether the method is trustworthy, not to produce a deployable model.
+   - `apply_operational(ref, hist, sim, cfg)` -- train once on the full
+     hindcast, correct a target (e.g. the live 2026) forecast. This is the
+     actual production path.
+
+`pipeline.prepare_hindcast(cfg)` runs stages 1-3 for the whole hindcast
+record and returns `(chirps, land_mask, ref, hist)`.
+`pipeline.prepare_target_year(cfg, chirps, mask, year)` does the same for a
+single forecast year (operational or held-out).
+
+## CLI usage
+
+All commands read `config/domain.yaml` by default (`--config` to override).
+
+### `sbc-qdm train`
+
+Fits QDM on the full hindcast record (no year held out) and saves the
+trained adjustment factors/quantiles for later reuse.
+
+```bash
+python -m sbc_qdm.cli train
+```
+
+Output: `output/qdm_trained.nc` (`af` and `hist_q` per month).
+
+### `sbc-qdm cross-validate`
+
+Runs the full leave-one-year-out cross-validation: trains on all-but-one
+hindcast year, corrects that year, for every year present in the hindcast.
+This is how you validate the method before trusting an operational
+correction, and it's what produces the bias/CRPSS/rank-histogram numbers you
+should look at before applying anything for real.
+
+```bash
+python -m sbc_qdm.cli cross-validate
+```
+
+Drives one **subprocess per year** internally (see `cross-validate-fold`
+below) rather than looping in-process -- long-running, memory-heavy
+single-process loops on this project repeatedly hit fragmentation/deadlock
+issues at full domain/ensemble scale (see "Operational notes" below).
+Resumable: existing `output/loyo_folds/{year}.nc` files are skipped, so a
+killed/crashed run can just be re-invoked as-is.
+
+Outputs:
+- `output/loyo_folds/{year}.nc` -- per-fold corrected year (intermediate, kept for resumability)
+- `output/loyo_corrected.nc` -- all folds concatenated into one corrected hindcast
+- `output/loyo_diagnostics.nc` -- bias maps, wet-day frequency, CRPS/CRPSS, rank histograms (pre vs post correction)
+
+### `sbc-qdm cross-validate-fold --year YYYY`
+
+Runs a single leave-one-year-out fold. This is what `cross-validate` shells
+out to; call it directly only for debugging a specific year in isolation.
+
+```bash
+python -m sbc_qdm.cli cross-validate-fold --year 2013
+```
+
+### `sbc-qdm apply [--year YYYY]`
+
+The actual production step: trains on the **entire** hindcast record (all
+years, nothing held out) and applies that single trained model to correct
+the operational forecast year (defaults to `config["time"]["operational_year"]`,
+currently 2026).
+
+```bash
+python -m sbc_qdm.cli apply
+python -m sbc_qdm.cli apply --year 2027   # once a 2027 forecast file exists
+```
+
+Output: `output/corrected_{year}.nc`.
+
+### `sbc-qdm validate`
+
+Recomputes the diagnostics dataset from `output/loyo_corrected.nc` (running
+`cross-validate` first if it doesn't exist yet) and prints a domain-mean
+summary. Useful if you've changed `validate.py` and want fresh diagnostics
+without repeating the (expensive) fold training.
+
+```bash
+python -m sbc_qdm.cli validate
+```
+
+### `sbc-qdm plot-diagnostics`
+
+Renders the spatial/distributional figures from `output/loyo_diagnostics.nc`
+(running `validate` first if it doesn't exist yet).
+
+```bash
+python -m sbc_qdm.cli plot-diagnostics
+```
+
+Output, all under `output/figures/`:
+- `bias_maps.png` -- raw vs corrected mean bias, diverging (blue=dry, red=wet), shared colorbar
+- `wet_day_frequency.png` -- raw vs corrected fraction of days > 1 mm/day, shared sequential colorbar
+- `crps.png` -- raw vs corrected CRPS, shared sequential colorbar (lower is better)
+- `crpss.png` -- CRPS skill score map (red = correction helps, blue = correction hurts)
+- `rank_histogram.png` -- raw vs corrected ensemble rank histogram, log-scale y-axis (the rank-0
+  dry-day spike is ~40x taller than everything else on a linear scale). Note the visible
+  discontinuity at rank 25/26: hindcast years with only 25 members can never register above
+  rank 25 in this pooled histogram, so the two halves aren't perfectly apples-to-apples --
+  a real artifact of the ensemble-size change, not a bug.
+
+### `sbc-qdm evaluate`
+
+The full scientific evaluation suite: daily / monthly / JJAS-seasonal, spatial,
+raw vs QDM-corrected. Requires `output/loyo_corrected.nc` (runs `cross-validate`
+first if missing). See `src/sbc_qdm/verify/` for the implementation --
+`aggregate.py` (monthly/JJAS aggregation, climatology, tercile categories),
+`deterministic.py` (MBE/MAE/PBIAS/RMSE/SD & CV ratio), `distributions.py`
+(Q-Q/ECDF/PDF, quantile bias, wet-day frequency bias), `spells.py` (wet/dry
+spell length distributions), `skill.py` (ACC/Spearman ACC/RMSESS/interannual
+variability ratio -- temporal skill vs climatology), `probabilistic.py`
+(CRPS/CRPSS, RPSS, Brier Score/BSS, ROC, scored against CHIRPS-derived
+tercile categories), `calibration.py` (reliability diagrams, spread-skill
+ratio), `spatial.py` (pattern correlation, spatial RMSE -- skill across
+pixels for a fixed time, the complement to skill.py's per-pixel-across-years
+view).
+
+```bash
+python -m sbc_qdm.cli evaluate
+```
+
+This is expensive: the full 33-year/full-domain run took **~4.3 hours**,
+dominated by the domain-pooled Q-Q/ECDF/PDF distributions (~2.5h) and the
+wet/dry spell-length extraction (~1.4h) -- both are plain Python loops over
+every pixel/member series (streamed in (lat,lon) tiles to stay memory-bounded,
+see `verify/aggregate.py`'s `iter_spatial_blocks`), which doesn't vectorize.
+Everything else (deterministic/skill/probabilistic maps) takes minutes.
+
+Output under `output/evaluation/`:
+- `daily_deterministic.nc` -- MBE/MAE/PBIAS/RMSE/SD & CV ratio, quantile bias
+  (Q10/50/90/95), wet-day frequency bias, spread-skill ratio; raw & corrected
+- `qq_pairs.nc`, `spell_lengths.npz` -- domain-pooled Q-Q pairs and raw
+  wet/dry spell-length samples (obs/raw/corrected)
+- `daily_spatial_timeseries.nc` -- spatial correlation/pattern correlation/RMSE, one value per day
+- `monthly_deterministic_and_skill.nc` -- deterministic + ACC/Spearman/RMSESS/IVR, per calendar month
+- `jjas_deterministic_and_skill.nc` -- same, for the JJAS season total
+- `jjas_probabilistic.nc` -- RPSS, BSS & ROC skill score (below/near/above-normal tercile categories), CRPS/CRPSS
+- `figures/` -- 13 curated PNGs (not one-per-metric-per-scale; the netCDF
+  files above hold the full daily/monthly/JJAS breakdown for anything not
+  separately plotted)
+
+**What we actually found running this** (see Results below for the numbers):
+QDM removes systematic bias thoroughly (daily PBIAS +32%->-1.6%; JJAS-total
+RMSE cut ~48%; JJAS CRPSS +0.38) but is a purely marginal correction, so it
+does **not** fix everything -- ensemble-mean daily variance (SD ratio) and
+tercile-discrimination ability (ROC skill score) are essentially unchanged
+before/after correction, anomaly correlation (ACC) actually drops slightly,
+and extreme (Q95+) quantiles get amplified *beyond* both the raw forecast and
+CHIRPS' own observed range in the Q-Q plot -- worth knowing before using the
+corrected output for anything extreme-sensitive (flood risk, etc.). Wet/dry
+spell-length distributions are barely changed by the correction, consistent
+with QDM having no mechanism to fix day-to-day persistence.
+
+## Suggested order of operations
+
+```bash
+sbc-qdm cross-validate     # judge whether the method is trustworthy
+sbc-qdm plot-diagnostics   # look at where/how it helps or hurts spatially
+sbc-qdm evaluate           # full scientific evaluation (expensive, ~4hr at full scale)
+sbc-qdm validate           # (only needed if you re-run diagnostics after cross-validate already ran)
+sbc-qdm apply              # produce the deployable, bias-corrected operational forecast
+```
+
+## Rebuilding the CHIRPS reference
+
+If you add or fix a year's CHIRPS data (each year has a `chirps-v2.0.{year}.days_p25_clip.nc`
+file under `data/chirps_pr_et/`), rebuild the merged reference before rerunning
+anything:
+
+```python
+import xarray as xr
+from pathlib import Path
+
+clip_dir = Path("data/chirps_pr_et")
+years = range(1993, 2026)
+datasets = [xr.open_dataset(clip_dir / f"chirps-v2.0.{y}.days_p25_clip.nc") for y in years]
+merged = xr.concat(datasets, dim="time")
+merged.to_netcdf(clip_dir / "et_chirps_pr_r25_1993_2025.nc")
+```
+
+Then delete `output/loyo_folds/` (every fold's training pool changes when a
+year is added or fixed) and rerun `sbc-qdm cross-validate` from scratch.
+
+## Operational notes (things that bit us at full scale)
+
+These are baked into the code already, documented here so a future change
+doesn't accidentally reintroduce them:
+
+- **netCDF4/HDF5 writes are not reliably thread-safe.** `qdm.py` sets a
+  process-wide threaded dask scheduler for training/adjustment performance;
+  writing a large, multi-chunk dask array to netCDF under that same threaded
+  scheduler deadlocked silently for 18+ hours (using ~20s of actual CPU time)
+  during the cross-validation combine step. `cli.py` forces
+  `dask.config.set(scheduler="synchronous")` around every `.to_netcdf()` call
+  on a lazy array. If you add a new write path, wrap it the same way.
+- **This project's dev machine has had as little as ~0.5 GiB of free system
+  memory** under normal desktop load (VS Code, browser, etc.), unrelated to
+  this pipeline. `regrid.py` and `qdm.py` chunk spatially (5x5 to 10x10
+  tiles) specifically to keep peak per-chunk memory in the tens-of-MB range.
+  If you hit `MemoryError` on a fresh run, it's very likely ambient system
+  pressure, not a regression -- check `df -h` (disk) and available RAM before
+  assuming a code bug, and simply resume (`cross-validate` is safe to
+  re-invoke).
+- **`xsdba.QuantileDeltaMapping`'s calendar-aware `Grouper` is broken for
+  sub-annual data** -- confirmed on two `xsdba` versions, reproduced even
+  when adjusting the exact array used for training. This is why `qdm.py`
+  hand-rolls per-month grouping in plain xarray instead of using
+  `xsdba.QuantileDeltaMapping` directly; only `xsdba.processing.adapt_freq`
+  (which works fine ungrouped) is reused from the library.
+
+## Evaluation report notebook
+
+`notebooks/evaluation_report.ipynb` walks through every figure and summary
+table in the full evaluation suite (Sections 1-7: daily diagnostics,
+deterministic metrics, distributional similarity, spell persistence, spatial
+performance, monthly/JJAS skill vs climatology, probabilistic ensemble
+skill) with an explanation after each plot -- the same findings as the
+Results section below, in narrative form -- plus two sections on the live
+2026 operational forecast itself: Section 8 (JJAS seasonal total, raw vs
+corrected) and Section 9 (month-by-month raw vs corrected vs the 1993-2025
+CHIRPS climatology, both as raw totals and as anomalies). Every code cell
+calls the real `sbc_qdm.viz`/`sbc_qdm.verify.viz` plotting functions against
+cached numeric results, not a re-implementation -- the two exceptions
+(domain-pooled ECDF/PDF, and the reliability diagram's underlying
+per-year tercile probabilities) are noted inline where the notebook shows
+real source instead of re-executing an expensive full-domain rescan. It's
+pre-executed (all cells have cached outputs already embedded) and only reads
+from `output/` -- it does not re-run the correction or evaluation pipeline.
+Rebuild it after a fresh `sbc-qdm evaluate` run with:
+
+```bash
+python -m nbconvert --to notebook --execute --inplace notebooks/evaluation_report.ipynb
+```
+
+### Ethiopia-clipped variant
+
+`notebooks/evaluation_report_ethiopia.ipynb` is the same report clipped to
+Ethiopia's national boundary (`data/eth_shapefile/eth_admin0.shp`, loaded via
+`sbc_qdm.verify.boundary.load_country_mask`). Ethiopia's actual shape excludes
+a substantial fraction of the original domain -- only 55.9% of the domain's
+land pixels (1,484 of 2,657) fall inside its border, the rest being Somalia,
+parts of Kenya, Eritrea, Djibouti, and South Sudan that shared the same
+bounding box -- so results genuinely differ in places (e.g. raw PBIAS +14.5%
+for Ethiopia vs +31.8% domain-wide; interannual variability ratio improves
+toward 1.0 after correction within Ethiopia vs moving further away
+domain-wide).
+
+Per-pixel results (bias/deterministic/skill/probabilistic maps, the 2026
+forecast sections, and even the two pooled-but-cheap quantities -- rank
+histogram and spatial pattern correlation, both under 90s to recompute) are
+genuinely Ethiopia-only. The two truly expensive steps (domain-pooled
+Q-Q/ECDF/PDF, and wet/dry spell-length extraction -- ~2.5hr and ~1.4hr in the
+original run) are **not** re-scanned Ethiopia-only, since masking doesn't
+reduce their block-wise scan cost (see `verify/aggregate.py`'s
+`iter_spatial_blocks`); those two sections keep the original full-domain
+results, clearly noted inline rather than silently reused. Rebuild it (after
+a fresh `sbc-qdm evaluate` run, or if the shapefile changes) with the same
+`nbconvert` command, pointed at `evaluation_report_ethiopia.ipynb`.
+
+## Results
+
+**33-year leave-one-year-out cross-validation** (`output/loyo_diagnostics.nc`):
+
+| Metric | Raw ECMWF | Corrected (QDM) |
+|---|---|---|
+| Mean bias vs CHIRPS | +0.382 mm/day | -0.031 mm/day |
+| Wet-day frequency | 25.3% | 16.3% |
+| CRPS (lower is better) | 2.040 | 1.844 |
+| CRPSS (skill vs raw) | -- | +0.106 |
+
+**2026 operational application** (`output/corrected_2026.nc`):
+
+| | Raw | Corrected |
+|---|---|---|
+| Mean daily precip | 2.61 mm/day | 2.22 mm/day |
+| Wet-day frequency | 35.7% | 21.9% |
+
+The correction reduces mean bias by roughly an order of magnitude and
+corrects ECMWF's tendency to rain too often (too lightly), with a positive
+CRPS skill score under honest (not in-sample) cross-validation.
+
+**Full scientific evaluation suite** (`output/evaluation/`, domain means, raw vs corrected):
+
+| Scale | Metric | Raw | Corrected |
+|---|---|---|---|
+| Daily | MBE (mm/day) | +0.38 | -0.03 |
+| Daily | PBIAS | +31.8% | -1.6% |
+| Daily | MAE (mm/day) | 3.08 | 2.85 |
+| Daily | RMSE (mm/day) | 5.03 | 4.96 |
+| Daily | SD ratio (ensemble mean) | 0.42 | 0.42 |
+| JJAS total | MBE (mm) | +56.8 | -4.2 |
+| JJAS total | RMSE (mm) | 110.2 | 56.9 |
+| JJAS total | CRPS | 72.8 | 32.7 |
+| JJAS total | CRPSS | -- | +0.38 |
+| JJAS total | ACC | 0.242 | 0.204 |
+| JJAS total | RPSS (tercile) | -0.264 | -0.055 |
+| JJAS total | BSS, above-normal | -0.218 | -0.031 |
+| JJAS total | ROC skill, above-normal | 0.246 | 0.242 |
+
+**What this reveals that the simpler daily diagnostics didn't:**
+- Bias correction is thorough at every scale (PBIAS, JJAS-total RMSE/CRPS all
+  improve substantially -- RMSE cut ~48% and CRPS ~55% at the JJAS-seasonal-total
+  scale, where random day-to-day noise cancels out and the systematic bias fix
+  dominates).
+- QDM is a **purely marginal** correction, and it shows: ensemble-mean daily
+  variance (SD ratio, ~0.42 both before and after) and tercile-discrimination
+  ability (ROC skill, ~0.246 both before and after) are essentially
+  **unchanged**. RPSS/BSS improve substantially (calibration gets better) while
+  ROC skill doesn't move (ranking ability was already there, or wasn't, and
+  QDM doesn't touch it) -- textbook-consistent with QDM fixing probability
+  *calibration* without improving *discrimination*.
+- ACC actually **drops slightly** (0.242 -> 0.204) after correction -- a real,
+  if small, trade-off worth knowing about, not hidden by the aggregate CRPSS
+  improvement.
+- The Q-Q plot (`figures/qq_plot.png`) shows corrected quantiles tracking
+  CHIRPS closely through the bulk of the distribution, but **diverging above
+  both the raw forecast and CHIRPS' own range above ~Q95** -- consistent with
+  the 2026 forecast's higher max noted earlier. Worth a closer look before
+  using this output for flood-risk or other extreme-sensitive purposes.
+- Wet/dry spell-length distributions (`figures/spell_distributions.png`) are
+  **barely changed** by the correction -- CHIRPS shows a much sharper spike
+  at 1-day wet spells than either raw or corrected reproduce. Expected: QDM
+  corrects each day's magnitude independently and has no mechanism to fix
+  day-to-day persistence/sequencing.
+- Skill is spatially heterogeneous (`figures/jjas_probabilistic_skill.png`):
+  RPSS/BSS are positive in the northeast of the domain but negative through
+  the central-south, while ROC skill is strongly positive almost everywhere
+  -- i.e. the ensemble discriminates above-normal seasons reasonably well
+  nearly everywhere, but its absolute probability calibration is still poor
+  in the central/southern part of the domain even where discrimination is fine.

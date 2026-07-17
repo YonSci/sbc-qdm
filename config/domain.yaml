@@ -1,0 +1,66 @@
+# Domain and data configuration for the CHIRPS/ECMWF QDM bias-correction pipeline.
+# Values below were derived directly from the source files in data/ -- see
+# src/sbc_qdm/io.py for the code that reads them.
+
+paths:
+  chirps_reference: data/chirps_pr_et/et_chirps_pr_r25_1993_2025.nc
+  ecmwf_dir: data/ecmwf
+  ecmwf_pattern: "ecmwf_{year}05_d01.nc"   # single May initialization per year
+  output_dir: output
+
+domain:
+  # Bounding box shared by both datasets (ECMWF's coarser 1 deg grid is the
+  # limiting extent; CHIRPS is already clipped to match).
+  lat_min: 3.5
+  lat_max: 14.5
+  lon_min: 33.5
+  lon_max: 47.5
+
+grids:
+  chirps:
+    resolution_deg: 0.25
+    lat_name: lat
+    lon_name: lon
+  ecmwf:
+    resolution_deg: 1.0
+    lat_name: latitude
+    lon_name: longitude
+
+variables:
+  chirps_var: precip        # mm/day
+  ecmwf_var: tp              # meters, accumulated since forecast init -- must be
+                              # de-accumulated (see preprocess.deaccumulate) before
+                              # converting to pr (mm/day)
+  corrected_var: pr
+
+ensemble:
+  realization_dim: number    # renamed to "realization"
+  n_members: 51   # true only for 2017+; ECMWF SEAS5 hindcasts (1993-2016) have
+                    # 25 members. xr.concat pads 1993-2016 up to 51 with NaN --
+                    # verified harmless since quantile()/adapt_freq skip NaN
+                    # correctly (see project history), so no special-casing needed.
+  hindcast_n_members: 25   # operational/target years (2017+) are clipped down to
+                             # this many members (pipeline.prepare_target_year) so
+                             # the corrected output has a consistent ensemble size
+                             # matching the hindcast, rather than jumping 25->51
+                             # at the 2017 operational/reforecast boundary.
+
+time:
+  init_month: 5               # May
+  lead_days: 183               # forecast_period length (May 2 -- Oct 31)
+  hindcast_years: [1993, 2025]  # inclusive range used for QDM training
+  operational_year: 2026        # forecast to be corrected operationally
+
+qdm:
+  kind: "*"                   # multiplicative, appropriate for precipitation
+  nquantiles: 50
+  group: "time.dayofyear"
+  window: 15                   # +/- days pooled around each day-of-year
+  add_dims: ["realization"]
+  extrapolation: constant
+  adapt_freq_thresh: "0.1 mm/day"   # wet-day threshold for adapt_freq
+  random_seed: 0   # adapt_freq injects uniform random noise below the wet-day
+                     # threshold; seeded here so repeated runs are reproducible
+
+validation:
+  cross_validation: leave_one_year_out

@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sbc-qdm"
+version = "0.1.0"
+description = "Quantile Delta Mapping bias correction of C3S/ECMWF seasonal precipitation forecasts against CHIRPS"
+requires-python = ">=3.10"
+dependencies = [
+    "xarray>=2024.1",
+    "dask[distributed]>=2024.1",
+    "xsdba>=0.5",
+    "netCDF4>=1.6",
+    "cftime>=1.6",
+    "scipy>=1.11",
+    "bottleneck>=1.3",
+    "numpy>=1.26",
+    "PyYAML>=6.0",
+    "typer>=0.12",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pandas>=2.0"]
+# Only needed for src/sbc_qdm/verify/boundary.py (country-shapefile clipping,
+# e.g. the Ethiopia-only evaluation notebook) -- not required by the core
+# CLI pipeline (train/cross-validate/apply/evaluate).
+geo = ["geopandas>=1.0", "shapely>=2.0"]
+
+[project.scripts]
+sbc-qdm = "sbc_qdm.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "requires_data: needs the local data/ directory (real CHIRPS/ECMWF files, not committed to git) -- excluded in CI, see .github/workflows/tests.yml",
+]
