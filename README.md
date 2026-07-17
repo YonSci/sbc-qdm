@@ -284,12 +284,49 @@ QDM removes systematic bias thoroughly (daily PBIAS +32%->-1.6%; JJAS-total
 RMSE cut ~48%; JJAS CRPSS +0.38) but is a purely marginal correction, so it
 does **not** fix everything -- ensemble-mean daily variance (SD ratio) and
 tercile-discrimination ability (ROC skill score) are essentially unchanged
-before/after correction, anomaly correlation (ACC) actually drops slightly,
-and extreme (Q95+) quantiles get amplified *beyond* both the raw forecast and
-CHIRPS' own observed range in the Q-Q plot -- worth knowing before using the
-corrected output for anything extreme-sensitive (flood risk, etc.). Wet/dry
-spell-length distributions are barely changed by the correction, consistent
-with QDM having no mechanism to fix day-to-day persistence.
+before/after correction, anomaly correlation (ACC) actually drops slightly.
+Wet/dry spell-length distributions are barely changed by the correction,
+consistent with QDM having no mechanism to fix day-to-day persistence.
+
+Extreme (Q95+) quantiles get amplified *beyond* both the raw forecast and
+CHIRPS' own observed range in the Q-Q plot -- this was traced to an exact
+mechanism (not left as a vague caveat): `numpy.interp` clamps rather than
+extrapolates past the last quantile node (tau=0.99), so *any* raw value
+above that node's threshold gets the same flat adjustment factor regardless
+of how extreme it actually is. At one specific pixel/day (2026-10-22, lat
+7.875N lon 47.125E), an already-outlier raw ensemble member (54.5mm, vs
+~21mm for the next-highest member) got amplified to 257mm -- nearly double
+CHIRPS' own 134mm historical maximum there. The underlying bias being
+corrected is real and large (CHIRPS' 99th-percentile October rainfall at
+that pixel is ~82mm vs raw ECMWF's ~17mm), but the flat-beyond-the-last-node
+behavior is what lets the correction overshoot the observational record. See
+`notebooks/evaluation_report.ipynb` Section 8.1 for the full investigation,
+live-reproduced from `output/qdm_trained.nc`. **Practical takeaway: don't
+treat the corrected output's upper tail as reliable for extreme-sensitive
+uses (flood risk, design storms) without this caveat in mind.**
+
+`qdm.py` now concentrates extra quantile nodes in the tail (0.995/0.998/
+0.999/0.9995, via `config/domain.yaml`'s `qdm.tail_quantiles`) instead of
+stopping flat at 0.99 -- validated on the exact case above, it's a genuine
+but **partial** improvement, not a full fix: that same raw value now maps to
+179.6mm instead of 257.5mm (closer to, but still above, CHIRPS' 133.5mm
+historical max there). The root cause is that `numpy.interp` clamps rather
+than extrapolates for *any* value past its last given node, so extra nodes
+only push the clamping point further into the tail -- they don't eliminate
+it for a raw value extreme enough to exceed even the extended range (as this
+one still does, at tau=0.9995). A complete fix would need genuine tail
+extrapolation (e.g. a fitted distribution beyond the last empirical
+quantile), which is a bigger modeling decision than this change and hasn't
+been implemented. Note also that `qdm.extrapolation: constant` in the config
+is currently descriptive only -- the clamping behavior comes from
+`numpy.interp`'s hardcoded default, not from that field actually being read
+anywhere in the code.
+
+This fix changes the trained model, so the full 33-year cross-validation,
+the 2026 operational forecast, and both evaluation notebooks were **not**
+automatically re-run with it (a multi-hour undertaking -- see "Operational
+notes" below) -- check whether that's since happened before assuming the
+Results section reflects the new quantile grid.
 
 ## Suggested order of operations
 
@@ -454,9 +491,9 @@ CRPS skill score under honest (not in-sample) cross-validation.
   improvement.
 - The Q-Q plot (`figures/qq_plot.png`) shows corrected quantiles tracking
   CHIRPS closely through the bulk of the distribution, but **diverging above
-  both the raw forecast and CHIRPS' own range above ~Q95** -- consistent with
-  the 2026 forecast's higher max noted earlier. Worth a closer look before
-  using this output for flood-risk or other extreme-sensitive purposes.
+  both the raw forecast and CHIRPS' own range above ~Q95** -- traced to an
+  exact `numpy.interp`-clamping mechanism, not left as a vague caveat; see
+  "Extreme-tail amplification" below and `evaluation_report.ipynb` Section 8.1.
 - Wet/dry spell-length distributions (`figures/spell_distributions.png`) are
   **barely changed** by the correction -- CHIRPS shows a much sharper spike
   at 1-day wet spells than either raw or corrected reproduce. Expected: QDM

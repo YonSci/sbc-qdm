@@ -51,6 +51,27 @@ def equally_spaced_quantiles(n: int) -> np.ndarray:
     return np.arange(1, 2 * n, 2) / (2 * n)
 
 
+def evaluation_quantiles(n: int, tail_quantiles: tuple[float, ...] = ()) -> np.ndarray:
+    """equally_spaced_quantiles(n) plus extra nodes concentrated in `tail_quantiles`.
+
+    _adjust_pixel's np.interp clamps rather than extrapolates past the last
+    quantile node: with only the default 50 equally-spaced nodes (topping out
+    at 0.99), *any* raw value above that node's threshold gets the exact same
+    flat adjustment factor, no matter how far into the tail it sits. Found by
+    tracing a real case -- a raw ensemble member at 54.5mm (itself already an
+    outlier vs. ~21mm for the next-highest member) got amplified to 257mm,
+    nearly double CHIRPS' own 134mm historical maximum at that pixel, because
+    it was clamped to the same tau=0.99 as everything else above 17.3mm (see
+    README's "Extreme-tail amplification" section). Concentrating extra nodes
+    right below 1.0 (e.g. 0.995/0.998/0.999/0.9995) gives the mapping room to
+    graduate through the tail instead of going flat immediately past 0.99.
+    """
+    body = equally_spaced_quantiles(n)
+    if not tail_quantiles:
+        return body
+    return np.sort(np.unique(np.concatenate([body, np.asarray(tail_quantiles, dtype=float)])))
+
+
 def _sample_dims(da: xr.DataArray) -> list[str]:
     return [d for d in SAMPLE_DIMS if d in da.dims]
 
@@ -104,7 +125,7 @@ def train_qdm(ref: xr.DataArray, hist: xr.DataArray, cfg: dict) -> dict[int, tup
     Returns {month: (af, hist_q)}, each indexed by (quantiles, lat, lon).
     """
     n = cfg["qdm"]["nquantiles"]
-    quantiles = equally_spaced_quantiles(n)
+    quantiles = evaluation_quantiles(n, tuple(cfg["qdm"].get("tail_quantiles", ())))
     thresh = cfg["qdm"]["adapt_freq_thresh"]
     np.random.seed(cfg["qdm"].get("random_seed", 0))
 
@@ -148,7 +169,7 @@ def _adjust_one_month(sim_m: xr.DataArray, af: xr.DataArray, hist_q: xr.DataArra
 def apply_qdm(sim: xr.DataArray, trained: dict[int, tuple[xr.DataArray, xr.DataArray]], cfg: dict) -> xr.DataArray:
     """Apply a trained per-month QDM (see train_qdm) to `sim`, month by month."""
     n = cfg["qdm"]["nquantiles"]
-    quantiles = equally_spaced_quantiles(n)
+    quantiles = evaluation_quantiles(n, tuple(cfg["qdm"].get("tail_quantiles", ())))
 
     corrected_months = []
     for month, (af, hist_q) in trained.items():

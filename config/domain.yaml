@@ -61,6 +61,15 @@ qdm:
   adapt_freq_thresh: "0.1 mm/day"   # wet-day threshold for adapt_freq
   random_seed: 0   # adapt_freq injects uniform random noise below the wet-day
                      # threshold; seeded here so repeated runs are reproducible
+  tail_quantiles: [0.995, 0.998, 0.999, 0.9995]
+    # extra quantile nodes concentrated just below 1.0, on top of the 50
+    # equally-spaced nodes above (which top out flat at 0.99). Without these,
+    # numpy.interp clamps ANY raw value above the 0.99 node's threshold to the
+    # same adjustment factor, regardless of how extreme it is -- found via a
+    # real case where a raw ensemble member at 54.5mm got amplified to 257mm,
+    # nearly double CHIRPS' own historical maximum at that pixel (see
+    # README's "Extreme-tail amplification" section). Set to [] to revert to
+    # the plain 50-node grid.
 
 validation:
   cross_validation: leave_one_year_out

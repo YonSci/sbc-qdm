@@ -7,13 +7,16 @@ wires together correctly, not exhaustive numerical validation.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
+import xarray as xr
 
+from sbc_qdm.cli import _dataset_to_trained, _trained_to_dataset
 from sbc_qdm.config import load_config
 from sbc_qdm.io import load_chirps_reference, load_ecmwf_hindcast, load_ecmwf_year
 from sbc_qdm.preprocess import build_land_mask, apply_mask, ecmwf_precip_to_mm, rename_ecmwf_grid
 from sbc_qdm.regrid import regrid_to_chirps
-from sbc_qdm.qdm import train_qdm, apply_qdm, leave_one_year_out, apply_operational
+from sbc_qdm.qdm import train_qdm, apply_qdm, leave_one_year_out, apply_operational, evaluation_quantiles
 
 pytestmark = pytest.mark.requires_data
 
@@ -76,9 +79,10 @@ def test_regrid_to_chirps_matches_grid(cfg, hindcast_subset):
 def test_train_qdm_produces_one_fit_per_month(hindcast_subset, cfg):
     trained = train_qdm(hindcast_subset["ref"], hindcast_subset["hist"], cfg)
     assert set(trained.keys()) == {5, 6, 7, 8, 9, 10}
+    expected_n_quantiles = len(evaluation_quantiles(cfg["qdm"]["nquantiles"], tuple(cfg["qdm"].get("tail_quantiles", ()))))
     for af, hist_q in trained.values():
         assert "quantiles" in af.dims
-        assert af.sizes["quantiles"] == cfg["qdm"]["nquantiles"]
+        assert af.sizes["quantiles"] == expected_n_quantiles
         assert "realization" not in af.dims  # members pooled into the fit, not broadcast
 
 
@@ -108,3 +112,28 @@ def test_apply_operational_matches_manual_train_and_apply(hindcast_subset, targe
     manual = apply_qdm(target_subset, trained, cfg).compute()
     operational = apply_operational(hindcast_subset["ref"], hindcast_subset["hist"], target_subset, cfg).compute()
     assert bool((manual.fillna(-1) == operational.fillna(-1)).all())
+
+
+def test_train_command_serialization_roundtrips(hindcast_subset, cfg, tmp_path):
+    """Exercises the exact save/load path `sbc-qdm train` uses
+    (_trained_to_dataset -> to_netcdf -> _dataset_to_trained) -- this was
+    never covered by an automated test before, only run manually once
+    against the full 33-year hindcast.
+    """
+    trained = train_qdm(hindcast_subset["ref"], hindcast_subset["hist"], cfg)
+
+    ds = _trained_to_dataset(trained)
+    assert set(ds.data_vars) == {"af", "hist_q"}
+    assert set(ds["month"].values.tolist()) == set(trained.keys())
+
+    out_path = tmp_path / "qdm_trained.nc"
+    ds.to_netcdf(out_path)
+    reloaded = xr.open_dataset(out_path)
+
+    restored = _dataset_to_trained(reloaded)
+    assert set(restored.keys()) == set(trained.keys())
+    for month in trained:
+        af_original, hist_q_original = trained[month]
+        af_restored, hist_q_restored = restored[month]
+        assert np.allclose(af_original.values, af_restored.values, equal_nan=True)
+        assert np.allclose(hist_q_original.values, hist_q_restored.values, equal_nan=True)

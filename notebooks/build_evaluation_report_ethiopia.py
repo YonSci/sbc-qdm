@@ -649,6 +649,13 @@ last quantile node (0.99) applies the same flat ~4.7x adjustment factor to
 sits. An already-outlier ensemble member (54.5mm, vs ~21mm for the
 next-highest member) gets pushed to 257mm -- nearly double CHIRPS' own
 134mm historical maximum at that pixel.
+
+`evaluation_report.ipynb` Section 8.2 tests a fix (extra quantile nodes
+concentrated in the tail): it's a genuine but partial improvement for this
+pixel (257mm -> ~180mm, still above CHIRPS' 133.5mm max there), since
+`numpy.interp` still clamps beyond the extended grid's last node -- just
+further out. That fix changes the trained model and hasn't been rolled into
+a full re-run of either this notebook or the main one yet.
 """
 )
 

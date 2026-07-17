@@ -725,10 +725,79 @@ this pixel.
 **Practical takeaway:** the correction is reproducing a real, large model
 bias at the tail, not fabricating one -- but the flat-beyond-the-last-node
 behavior means it can overshoot the observational record itself when applied
-to an already-extreme raw ensemble member. A future improvement worth
-considering: more quantile nodes concentrated in the tail (e.g. 0.99, 0.995,
-0.999) rather than relying on `nquantiles=50` equally-spaced nodes topping
-out at 0.99, so the mapping is graduated rather than flat beyond it.
+to an already-extreme raw ensemble member.
+"""
+)
+
+md(
+    """
+### 8.2 Testing the fix: extra quantile nodes concentrated in the tail
+
+`qdm.py`'s `evaluation_quantiles()` now adds extra nodes just below 1.0
+(`config/domain.yaml`'s `qdm.tail_quantiles`: 0.995/0.998/0.999/0.9995) on
+top of the 50 equally-spaced nodes, so the mapping has more room to graduate
+through the tail instead of going flat right after 0.99. Retraining on a
+small spatial subset around the exact pixel from Section 8.1 tests whether
+it actually helps.
+"""
+)
+code(
+    """
+# retrain just this small neighborhood with the new (tail-extended) quantile grid
+from sbc_qdm.pipeline import prepare_hindcast as _prepare_hindcast_for_fix
+from sbc_qdm.qdm import train_qdm
+
+_, _, ref_full_for_fix, hist_full_for_fix = _prepare_hindcast_for_fix(cfg)
+subset_lat = slice(extreme["lat"] - 0.5, extreme["lat"] + 0.7)
+subset_lon = slice(extreme["lon"] - 0.7, extreme["lon"] + 0.5)
+fixed_trained = train_qdm(
+    ref_full_for_fix.sel(lat=subset_lat, lon=subset_lon),
+    hist_full_for_fix.sel(lat=subset_lat, lon=subset_lon),
+    cfg,
+)
+fixed_af, fixed_hist_q = fixed_trained[month]
+fixed_af_pixel = fixed_af.sel(lat=extreme["lat"], lon=extreme["lon"], method="nearest")
+fixed_hist_q_pixel = fixed_hist_q.sel(lat=extreme["lat"], lon=extreme["lon"], method="nearest")
+
+print("quantile nodes (top 8):", fixed_af_pixel["quantiles"].values[-8:])
+print("af (top 8 nodes):     ", fixed_af_pixel.values[-8:])
+print("hist_q mm (top 8 nodes):", fixed_hist_q_pixel.values[-8:])
+
+new_tau = float(np.interp(raw_val, fixed_hist_q_pixel.values, fixed_af_pixel["quantiles"].values))
+new_factor = float(np.interp(new_tau, fixed_af_pixel["quantiles"].values, fixed_af_pixel.values))
+new_corrected = raw_val * new_factor
+print()
+print(f"raw value {raw_val:.2f}mm -> tau={new_tau:.5f} -> factor={new_factor:.3f} -> NEW corrected = {new_corrected:.2f}mm")
+print(f"(previously, without the fix: {raw_val*top_af:.2f}mm; CHIRPS historical max at this pixel/month: 133.5mm)")
+"""
+)
+md(
+    """
+**Reading it -- a genuine but partial improvement, not a full fix:** the
+same raw value (54.5mm) now maps to **~180mm** instead of 257mm, a ~30%
+reduction, and closer to CHIRPS' own 133.5mm historical maximum -- but still
+above it. Looking at why: 54.5mm still exceeds the *extended* grid's top
+node (~40mm at tau=0.9995), so `numpy.interp` still clamps -- just further
+out. Extra tail nodes shrink the problem but don't eliminate it for a raw
+value extreme enough to exceed even the extended empirical range, as this
+one still does. The `af` values are also visibly non-monotonic in the last
+few nodes (a spike at 0.995, then declining) -- genuine sampling noise, since
+the most extreme quantiles are defined by only a handful of pooled samples.
+
+A complete fix would need genuine tail extrapolation (e.g. fitting a
+parametric tail distribution beyond the last empirical quantile) rather than
+just adding more empirical nodes -- a bigger modeling decision than this
+change, and not implemented here. Note also that `config/domain.yaml`'s
+`qdm.extrapolation: constant` field is currently descriptive only -- the
+clamping behavior comes from `numpy.interp`'s hardcoded default, not from
+that field actually being read anywhere in the code.
+
+**This fix changes the trained model.** The full 33-year cross-validation,
+the 2026 operational forecast, and this notebook's own Sections 1-7 were
+**not** automatically re-run with the new quantile grid (a multi-hour
+undertaking) -- the numbers and figures throughout the rest of this notebook
+still reflect the original 50-node grid unless a full re-run has since
+happened.
 """
 )
 
