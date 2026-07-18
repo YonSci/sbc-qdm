@@ -1,15 +1,10 @@
-# sbc-qdm
+# Spatial Bias Correction - Quantile Delta Mapping (SBC-QDM)
 
-**Bias-correcting ECMWF seasonal rainfall forecasts against CHIRPS observations, for the Horn of Africa.**
+**Bias-correcting ECMWF seasonal rainfall forecasts against CHIRPS observations, for the Horn of Africa (Ethiopia).**
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Tests](https://img.shields.io/badge/tests-pytest-informational)
-
-> A raw seasonal forecast tells you it's going to rain 32% more than it actually
-> will, every May, for 33 years running. This project fixes that, measures how
-> well the fix actually worked with honest out-of-sample validation, and is
-> upfront about the one thing it *doesn't* fix.
 
 ---
 
@@ -34,36 +29,21 @@
 
 ## The problem
 
-The Horn of Africa depends on two rainy seasons a year, and both have failed
-repeatedly in the last decade, driving some of the world's most severe food
-security crises. Seasonal forecasts — like ECMWF's SEAS5, initialized every
-May with a 51-member ensemble reaching five months into the future — are one
-of the only tools available months ahead of a drought or flood. But raw
-seasonal forecast output is not directly trustworthy: coarse-resolution
-global models carry systematic, well-documented wet/dry biases that swamp
-the actual forecast signal at the scale humanitarian and agricultural
-decisions need.
+Raw seasonal forecast output is not directly trustworthy: coarse-resolution global models carry systematic, well-documented wet/dry biases that swamp the actual forecast signal at the scale humanitarian and agricultural decisions need.
 
-This project bias-corrects ECMWF's raw forecast against CHIRPS — a
-high-resolution, station-blended satellite rainfall product treated as
-ground truth — over a Horn of Africa domain (roughly Ethiopia and its
-immediate neighbors, 3.5-14.5°N, 33.5-47.5°E), using 33 years of hindcasts
-(1993-2025) to learn the correction and validating it the way you'd want
-before trusting it operationally: **leave-one-year-out cross-validation**,
+This project bias-corrects ECMWF's raw forecast against CHIRPS a
+high-resolution, station-blended satellite rainfall product treated as ground truth — over a Horn of Africa domain (roughly Ethiopia and its immediate neighbors, 3.5-14.5°N, 33.5-47.5°E), using 33 years of hindcasts (1993-2025) to learn the correction and validating it the way you'd want before trusting it operationally: **leave-one-year-out cross-validation**,
 never scoring a year the model was trained on.
+
 
 ## What this does
 
-- **Quantile Delta Mapping (QDM)**, fit per pixel and per calendar month,
-  correcting the full shape of the forecast distribution — not just its mean.
-- **Ensemble-aware**: all 51 members pooled for training, corrected
+- **Quantile Delta Mapping (QDM)**, fit per pixel and per calendar month, correcting the full shape of the forecast distribution not just its mean.
+- **Ensemble-aware**: all members pooled for training, corrected
   member-wise so ensemble spread (a proxy for forecast uncertainty) is preserved.
-- **Validated honestly**: every skill number reported here comes from
-  leave-one-year-out cross-validation, not in-sample fit quality.
+- **Validated honestly**: every skill number reported here comes from leave-one-year-out cross-validation, not in-sample fit quality.
 - **Evaluated thoroughly**: a 13-category scientific verification suite
-  (deterministic bias metrics, distributional similarity, spell persistence,
-  spatial pattern skill, monthly/seasonal skill vs. climatology, probabilistic
-  ensemble skill, calibration) at daily, monthly, and JJAS-seasonal scales —
+  (deterministic bias metrics, distributional similarity, spell persistence, spatial pattern skill, monthly/seasonal skill vs. climatology, probabilisticensemble skill, calibration) at daily, monthly, and JJAS-seasonal scales —
   not just "the mean bias went down."
 - **Honest about what it doesn't fix**: QDM is a purely marginal correction.
   It doesn't touch day-to-day persistence (wet/dry spell lengths) or the
@@ -86,9 +66,9 @@ never scoring a year the model was trained on.
 Full breakdown, including where the correction *doesn't* help, in
 [Full results](#full-results) below.
 
-![Raw vs corrected mean bias against CHIRPS](docs/figures/bias_maps.png)
+![Raw vs corrected mean bias against CHIRPS, clipped to Ethiopia](docs/figures/bias_maps.png)
 
-*Raw ECMWF (left) vs. QDM-corrected (right) mean daily bias against CHIRPS, same shared diverging colorbar (blue = too dry, red = too wet, over the 33-year leave-one-year-out cross-validation).*
+*Raw ECMWF (left) vs. QDM-corrected (right) mean daily bias against CHIRPS, clipped to Ethiopia's national boundary, same shared diverging colorbar (blue = too dry, red = too wet, over the 33-year leave-one-year-out cross-validation). The table above is domain-wide; see [Full results](#full-results) for how Ethiopia-only numbers differ.*
 
 > **A note on timing**: these numbers reflect the pipeline's original
 > 50-quantile-node grid. A fix for extreme-tail amplification (see
@@ -428,11 +408,11 @@ CRPS skill score under honest (not in-sample) cross-validation.
 </tr>
 </table>
 
-*Left: ECMWF rains far too often, too lightly — QDM corrects wet-day frequency down toward CHIRPS' ~15%. Right: CRPSS map — red where the correction improves probabilistic skill over raw, blue where it hurts.*
+*Ethiopia-clipped. Left: ECMWF rains far too often, too lightly — QDM corrects wet-day frequency down toward CHIRPS' ~15%. Right: CRPSS map — red where the correction improves probabilistic skill over raw, blue where it hurts.*
 
-![Month-by-month raw vs. corrected vs. 1993-2025 CHIRPS climatology for the 2026 forecast](docs/figures/monthly_2026_comparison.png)
+![Month-by-month raw vs. corrected vs. 1993-2025 CHIRPS climatology for the 2026 forecast, clipped to Ethiopia](docs/figures/monthly_2026_comparison.png)
 
-*The live 2026 operational forecast, month by month: raw ECMWF, QDM-corrected, and the 33-year CHIRPS climatology for comparison. From `notebooks/evaluation_report.ipynb` Section 9.*
+*Ethiopia-clipped. The live 2026 operational forecast, month by month: raw ECMWF, QDM-corrected, and the 33-year CHIRPS climatology for comparison. From `notebooks/evaluation_report_ethiopia.ipynb` Section 9.*
 
 **Full scientific evaluation suite** (`output/evaluation/`, domain means, raw vs corrected):
 
@@ -490,7 +470,7 @@ CRPS skill score under honest (not in-sample) cross-validation.
 </tr>
 </table>
 
-*Left: wet/dry spell-length distributions — QDM leaves persistence essentially untouched. Right: JJAS probabilistic skill (RPSS/BSS/ROC) is spatially heterogeneous — good discrimination almost everywhere, but calibration lags in the central-south.*
+*Left: wet/dry spell-length distributions (domain-wide — this is one of the two expensive full-scan steps not re-run Ethiopia-only, see [Evaluation notebooks](#evaluation-notebooks)) — QDM leaves persistence essentially untouched. Right: JJAS probabilistic skill (RPSS/BSS/ROC), Ethiopia-clipped — good discrimination almost everywhere within Ethiopia, but calibration lags in the south.*
 
 ## Known limitations
 
@@ -509,7 +489,7 @@ it implicit:
 
 ![Q-Q plot: corrected quantiles diverging above CHIRPS and raw ECMWF beyond ~Q95](docs/figures/qq_plot.png)
 
-*Corrected quantiles track CHIRPS closely through most of the distribution, then overshoot both raw ECMWF and CHIRPS' own observed range above ~Q95 — the extreme-tail amplification explained below.*
+*Domain-wide (this is the other expensive full-scan step not re-run Ethiopia-only). Corrected quantiles track CHIRPS closely through most of the distribution, then overshoot both raw ECMWF and CHIRPS' own observed range above ~Q95 — the extreme-tail amplification explained below.*
 
 **Extreme-tail amplification** (the most involved issue, worth its own
 explanation): Q95+ quantiles get amplified *beyond* both the raw forecast
