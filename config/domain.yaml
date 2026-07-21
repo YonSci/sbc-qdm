@@ -73,3 +73,18 @@ qdm:
 
 validation:
   cross_validation: leave_one_year_out
+
+methods:
+  # Methods compared via `sbc-qdm compare-methods` (see src/sbc_qdm/methods/).
+  # Empirical Quantile Mapping and Detrended Quantile Mapping read their
+  # quantile grid/adapt_freq settings from the qdm: section above directly
+  # (not duplicated here) so the three quantile-based methods are compared on
+  # identical quantile resolution and wet-day handling.
+  compare:
+    - qdm
+    - linear_scaling
+    - delta_change
+    - variance_scaling
+    - power_transformation
+    - empirical_quantile_mapping
+    - detrended_quantile_mapping

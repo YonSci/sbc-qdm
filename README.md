@@ -19,6 +19,7 @@
 - [CLI reference](#cli-reference)
 - [Evaluation notebooks](#evaluation-notebooks)
 - [Full results](#full-results)
+- [Method comparison](#method-comparison)
 - [Known limitations](#known-limitations)
 - [Engineering notes](#engineering-notes-things-that-bit-us-at-full-scale)
 - [Repository layout](#repository-layout)
@@ -42,13 +43,15 @@ never scoring a year the model was trained on.
 - **Ensemble-aware**: all members pooled for training, corrected
   member-wise so ensemble spread (a proxy for forecast uncertainty) is preserved.
 - **Validated honestly**: every skill number reported here comes from leave-one-year-out cross-validation, not in-sample fit quality.
-- **Evaluated thoroughly**: a 13-category scientific verification suite
-  (deterministic bias metrics, distributional similarity, spell persistence, spatial pattern skill, monthly/seasonal skill vs. climatology, probabilisticensemble skill, calibration) at daily, monthly, and JJAS-seasonal scales —
-  not just "the mean bias went down."
+- **Evaluated thoroughly**: All scientific verification suite
+  (deterministic bias metrics, distributional similarity, spell persistence, spatial pattern skill, monthly/seasonal skill vs. climatology, probabilistic ensemble skill, calibration) at daily, monthly, and JJAS-seasonal scales  not just "the mean bias went down."
 - **Honest about what it doesn't fix**: QDM is a purely marginal correction.
-  It doesn't touch day-to-day persistence (wet/dry spell lengths) or the
-  ensemble's ability to discriminate above/below-normal seasons (ROC skill) —
-  see [Known limitations](#known-limitations).
+  It doesn't touch day-to-day persistence (wet/dry spell lengths) or the ensemble's ability to discriminate above/below-normal seasons (ROC skill) see [Known limitations](#known-limitations).
+- **Benchmarked against 6 alternative correction methods** (Linear Scaling,
+  Delta Change, Variance Scaling, Power Transformation, Empirical Quantile
+  Mapping, Detrended Quantile Mapping), all run through the identical
+  cross-validation and evaluation pipeline so the comparison is apples-to-apples
+  — see [Method comparison](#method-comparison).
 
 ## Results at a glance
 
@@ -56,12 +59,12 @@ never scoring a year the model was trained on.
 
 | Metric | Raw ECMWF | Corrected (QDM) |
 |---|---|---|
-| Mean bias vs. CHIRPS | +0.382 mm/day | **-0.031 mm/day** |
-| Daily PBIAS | +31.8% | **-1.6%** |
+| Mean bias vs. CHIRPS | +0.382 mm/day | **-0.037 mm/day** |
+| Daily PBIAS | +31.8% | **-2.5%** |
 | Wet-day frequency | 25.3% | **16.3%** (CHIRPS: ~15%) |
-| CRPS (lower is better) | 2.040 | **1.844** |
+| CRPS (lower is better) | 2.040 | **1.843** |
 | CRPSS vs. raw | — | **+0.106** |
-| JJAS-total RMSE | 110.2 mm | **56.9 mm** (-48%) |
+| JJAS-total RMSE | 110.2 mm | **56.7 mm** (-49%) |
 
 Full breakdown, including where the correction *doesn't* help, in
 [Full results](#full-results) below.
@@ -70,11 +73,10 @@ Full breakdown, including where the correction *doesn't* help, in
 
 *Raw ECMWF (left) vs. QDM-corrected (right) mean daily bias against CHIRPS, clipped to Ethiopia's national boundary, same shared diverging colorbar (blue = too dry, red = too wet, over the 33-year leave-one-year-out cross-validation). The table above is domain-wide; see [Full results](#full-results) for how Ethiopia-only numbers differ.*
 
-> **A note on timing**: these numbers reflect the pipeline's original
-> 50-quantile-node grid. A fix for extreme-tail amplification (see
-> [Known limitations](#known-limitations)) changes the trained model
-> slightly; check whether a full re-run under the new grid has landed
-> since this was written before treating these as the final word.
+These numbers reflect the pipeline's current tail-concentrated quantile grid
+(see [Known limitations](#known-limitations) for the extreme-tail fix this
+grid was built to address) — the full 33-year cross-validation, evaluation
+suite, and 2026 operational forecast have all been re-run under it.
 
 ## How it works
 
@@ -385,16 +387,16 @@ a fresh `sbc-qdm evaluate` run, or if the shapefile changes) with the same
 
 | Metric | Raw ECMWF | Corrected (QDM) |
 |---|---|---|
-| Mean bias vs CHIRPS | +0.382 mm/day | -0.031 mm/day |
+| Mean bias vs CHIRPS | +0.382 mm/day | -0.037 mm/day |
 | Wet-day frequency | 25.3% | 16.3% |
-| CRPS (lower is better) | 2.040 | 1.844 |
+| CRPS (lower is better) | 2.040 | 1.843 |
 | CRPSS (skill vs raw) | -- | +0.106 |
 
 **2026 operational application** (`output/corrected_2026.nc`):
 
 | | Raw | Corrected |
 |---|---|---|
-| Mean daily precip | 2.61 mm/day | 2.22 mm/day |
+| Mean daily precip | 2.61 mm/day | 2.21 mm/day |
 | Wet-day frequency | 35.7% | 21.9% |
 
 The correction reduces mean bias by roughly an order of magnitude and
@@ -418,23 +420,23 @@ CRPS skill score under honest (not in-sample) cross-validation.
 
 | Scale | Metric | Raw | Corrected |
 |---|---|---|---|
-| Daily | MBE (mm/day) | +0.38 | -0.03 |
-| Daily | PBIAS | +31.8% | -1.6% |
+| Daily | MBE (mm/day) | +0.38 | -0.04 |
+| Daily | PBIAS | +31.8% | -2.5% |
 | Daily | MAE (mm/day) | 3.08 | 2.85 |
-| Daily | RMSE (mm/day) | 5.03 | 4.96 |
+| Daily | RMSE (mm/day) | 5.03 | 4.95 |
 | Daily | SD ratio (ensemble mean) | 0.42 | 0.42 |
-| JJAS total | MBE (mm) | +56.8 | -4.2 |
-| JJAS total | RMSE (mm) | 110.2 | 56.9 |
-| JJAS total | CRPS | 72.8 | 32.7 |
-| JJAS total | CRPSS | -- | +0.38 |
-| JJAS total | ACC | 0.242 | 0.204 |
-| JJAS total | RPSS (tercile) | -0.264 | -0.055 |
-| JJAS total | BSS, above-normal | -0.218 | -0.031 |
-| JJAS total | ROC skill, above-normal | 0.246 | 0.242 |
+| JJAS total | MBE (mm) | +56.8 | -4.8 |
+| JJAS total | RMSE (mm) | 110.2 | 56.7 |
+| JJAS total | CRPS | 72.8 | 32.6 |
+| JJAS total | CRPSS | -- | +0.39 |
+| JJAS total | ACC | 0.242 | 0.202 |
+| JJAS total | RPSS (tercile) | -0.264 | -0.053 |
+| JJAS total | BSS, above-normal | -0.218 | -0.026 |
+| JJAS total | ROC skill, above-normal | 0.246 | 0.243 |
 
 **What this reveals that the simpler daily diagnostics didn't:**
 - Bias correction is thorough at every scale (PBIAS, JJAS-total RMSE/CRPS all
-  improve substantially — RMSE cut ~48% and CRPS ~55% at the JJAS-seasonal-total
+  improve substantially — RMSE cut ~49% and CRPS ~55% at the JJAS-seasonal-total
   scale, where random day-to-day noise cancels out and the systematic bias fix
   dominates).
 - QDM is a **purely marginal** correction, and it shows: ensemble-mean daily
@@ -444,7 +446,7 @@ CRPS skill score under honest (not in-sample) cross-validation.
   ROC skill doesn't move (ranking ability was already there, or wasn't, and
   QDM doesn't touch it) — textbook-consistent with QDM fixing probability
   *calibration* without improving *discrimination*.
-- ACC actually **drops slightly** (0.242 -> 0.204) after correction — a real,
+- ACC actually **drops slightly** (0.242 -> 0.202) after correction — a real,
   if small, trade-off worth knowing about, not hidden by the aggregate CRPSS
   improvement.
 - The Q-Q plot (`figures/qq_plot.png`) shows corrected quantiles tracking
@@ -472,6 +474,85 @@ CRPS skill score under honest (not in-sample) cross-validation.
 
 *Left: wet/dry spell-length distributions (domain-wide — this is one of the two expensive full-scan steps not re-run Ethiopia-only, see [Evaluation notebooks](#evaluation-notebooks)) — QDM leaves persistence essentially untouched. Right: JJAS probabilistic skill (RPSS/BSS/ROC), Ethiopia-clipped — good discrimination almost everywhere within Ethiopia, but calibration lags in the south.*
 
+## Method comparison
+
+Is QDM actually worth its complexity, or would something simpler do just as
+well? `sbc-qdm compare-methods` answers that by running 6 alternative
+bias-correction methods through the *identical* leave-one-year-out
+cross-validation and evaluation pipeline as QDM — same data, same metrics,
+same domain-mean aggregation — so the comparison is apples-to-apples rather
+than borrowed from different papers' different setups.
+
+| Method | Idea |
+|---|---|
+| **Linear Scaling** | Corrects only the mean: one multiplicative ratio per pixel/month (Lenderink et al. 2007). Simplest possible correction — leaves variance, extremes, and wet-day frequency untouched. |
+| **Delta Change (DC)** | The additive counterpart to Linear Scaling — corrects the mean via a difference rather than a ratio. Also leaves spread/shape untouched. |
+| **Variance Scaling** | Extends Delta Change with a spread correction: rescales anomalies by the ratio of standard deviations after removing the mean bias (Chen et al. 2011). |
+| **Power Transformation** | Corrects mean and coefficient of variation via a fitted exponent (Leander & Buishand 2007) — handles precipitation's right-skew multiplicatively instead of needing to clip negative values. |
+| **Empirical Quantile Mapping (EQM)** | Plain quantile mapping: substitutes the raw value with the reference's value at the same quantile. Corrects the full distribution shape like QDM, but discards how the target period's own magnitude might differ from the training climatology at a given rank. |
+| **Detrended Quantile Mapping (DQM)** | Cannon et al. (2015)'s refinement of EQM — normalizes the target period by its own mean before quantile-mapping, then re-applies that mean-shift afterward, preserving signal EQM's direct substitution would discard. |
+| **QDM** (this project's default) | Cannon et al. (2015) — maps the *ratio/delta* at a given quantile onto the raw value, rather than substituting it outright, combining EQM's distribution-shape correction with DC's signal-preservation. |
+
+See [`src/sbc_qdm/methods/`](src/sbc_qdm/methods/) for the full implementation
+and references of each — every module's docstring explains the method and how
+it's adapted to this pipeline's leave-one-year-out setting (the classical
+"delta change" framing assumes a historical-vs-future scenario that doesn't
+map cleanly onto cross-validating a single historical period).
+
+```bash
+sbc-qdm compare-methods
+```
+
+Resumable exactly like `cross-validate`/`evaluate` (skips any method/stage
+whose output already exists), and cleans up each method's per-fold cache
+directory (~6.7GB each) once both its cross-validation and evaluation stages
+are confirmed complete, since keeping all of them simultaneously across 6+
+methods gets expensive fast. Output under `output/methods/{method}/` (mirrors
+the single-method CLI layout) and `output/method_comparison/`
+(`comparison_summary.nc`, `comparison.png`).
+
+![Bias-correction method comparison across all 7 methods](docs/figures/method_comparison.png)
+
+**33-year leave-one-year-out cross-validation, domain means:**
+
+| Method | Daily PBIAS | Daily RMSE (mm/day) | JJAS-total RMSE (mm) | JJAS-total CRPSS |
+|---|---|---|---|---|
+| Raw ECMWF | +31.8% | 5.03 | 110.2 | -- |
+| QDM | -2.5% | 4.95 | 56.7 | +0.386 |
+| Linear Scaling | -1.1% | 4.89 | 52.8 | **+0.437** |
+| Delta Change | +18.3% | 4.91 | 61.2 | +0.338 |
+| Variance Scaling | +12.5% | 4.96 | 67.3 | +0.324 |
+| Power Transformation | -1.4% | 4.95 | 55.5 | +0.405 |
+| Empirical Quantile Mapping | -2.7% | 4.95 | 56.6 | +0.387 |
+| Detrended Quantile Mapping | -3.5% | 4.95 | 53.7 | +0.419 |
+
+**What this reveals:**
+- **The three quantile-mapping methods (QDM, EQM, DQM) land within a whisker
+  of each other** on every aggregate metric here — expected, since all three
+  share the same quantile grid and `adapt_freq` wet-day preprocessing
+  (deliberately, so the comparison isn't confounded by different resolution
+  choices) and differ mainly in how they handle the target period's own
+  signal, a distinction these domain-mean metrics aren't designed to surface.
+- **Delta Change and Variance Scaling leave substantial bias behind**
+  (PBIAS +18.3% and +12.5%, both still over half the raw forecast's +31.8%)
+  — consistent with both methods correcting the mean/spread of the *whole*
+  distribution at once rather than mapping through it quantile-by-quantile,
+  so they can't correct a bias that varies across the distribution's range.
+- **Linear Scaling — the simplest method here — actually posts the best
+  JJAS-total RMSE and CRPSS**, edging out QDM. This isn't a knock against
+  QDM: JJAS-total RMSE and CRPSS are aggregate, mean-focused skill scores,
+  exactly where a mean-correcting method should do well, and exactly the
+  scores that don't capture what QDM buys you elsewhere (wet-day frequency,
+  the shape of the daily distribution, and the extreme-tail behavior covered
+  in [Known limitations](#known-limitations) below). It's a genuine, useful
+  data point, not swept under the rug — if all you need is a seasonal-total
+  forecast, Linear Scaling is a serious, far cheaper option.
+- **Wet-day frequency correction is where the quantile-mapping methods pull
+  ahead clearly** (visible in the comparison figure's fourth panel): QDM, EQM,
+  and DQM all apply a much larger wet-day-frequency correction than Delta
+  Change or Power Transformation, since only the quantile-mapping methods use
+  `adapt_freq` to directly target ECMWF's tendency to drizzle too often.
+
 ## Known limitations
 
 Being upfront about what this pipeline does *not* fix, rather than leaving
@@ -484,12 +565,12 @@ it implicit:
   QDM improves probability calibration (RPSS/BSS), not the ensemble's
   underlying ability to rank above/below-normal seasons correctly.
 - **Anomaly correlation (ACC) drops slightly after correction** (0.242 ->
-  0.204, JJAS-total) — a real, small trade-off alongside the much larger
+  0.202, JJAS-total) — a real, small trade-off alongside the much larger
   calibration gains.
 
 ![Q-Q plot: corrected quantiles diverging above CHIRPS and raw ECMWF beyond ~Q95](docs/figures/qq_plot.png)
 
-*Domain-wide (this is the other expensive full-scan step not re-run Ethiopia-only). Corrected quantiles track CHIRPS closely through most of the distribution, then overshoot both raw ECMWF and CHIRPS' own observed range above ~Q95 — the extreme-tail amplification explained below.*
+*Corrected quantiles track CHIRPS closely through most of the distribution, then overshoot both raw ECMWF and CHIRPS' own observed range above ~Q95 — the extreme-tail amplification explained below.*
 
 **Extreme-tail amplification** (the most involved issue, worth its own
 explanation): Q95+ quantiles get amplified *beyond* both the raw forecast
@@ -497,41 +578,56 @@ and CHIRPS' own observed range in the Q-Q plot. This was traced to an exact
 mechanism, not left as a vague caveat: `numpy.interp` clamps rather than
 extrapolates past the last quantile node (originally tau=0.99), so *any* raw
 value above that node's threshold gets the same flat adjustment factor
-regardless of how extreme it actually is. At one specific pixel/day
-(2026-10-22, lat 7.875°N lon 47.125°E), an already-outlier raw ensemble
-member (54.5mm, vs ~21mm for the next-highest member) got amplified to
-257mm — nearly double CHIRPS' own 134mm historical maximum there. The
-underlying bias being corrected is real and large (CHIRPS' 99th-percentile
-October rainfall at that pixel is ~82mm vs raw ECMWF's ~17mm), but the
-flat-beyond-the-last-node behavior is what lets the correction overshoot the
-observational record. See `notebooks/evaluation_report.ipynb` Section 8.1
-for the full investigation, live-reproduced from `output/qdm_trained.nc`.
+regardless of how extreme it actually is. The domain's single most extreme
+corrected 2026 value occurs at lat 7.625°N, lon 47.125°E, 2026-10-22, ensemble
+member 22: raw 61.06mm corrected to **243.75mm** under the original 50-node
+grid — CHIRPS' own October historical maximum at that exact pixel is
+234.57mm, so the old grid overshot the observational record there by ~4%.
+(An earlier version of this investigation reported a neighboring pixel,
+7.875°N, with a "134mm CHIRPS max" — a pixel mislocation, not this one;
+precipitation extremes vary substantially between adjacent 0.25° cells
+there, so that number was simply wrong and has been corrected here.) See
+`notebooks/evaluation_report.ipynb` Section 8.1 for the full investigation.
 **Practical takeaway: don't treat the corrected output's upper tail as
 reliable for extreme-sensitive uses (flood risk, design storms) without this
 caveat in mind.**
 
 `qdm.py` now concentrates extra quantile nodes in the tail (0.995/0.998/
 0.999/0.9995, via `config/domain.yaml`'s `qdm.tail_quantiles`) instead of
-stopping flat at 0.99 — validated on the exact case above, it's a genuine
-but **partial** improvement, not a full fix: that same raw value now maps to
-179.6mm instead of 257.5mm (closer to, but still above, CHIRPS' 133.5mm
-historical max there). The root cause is that `numpy.interp` clamps rather
-than extrapolates for *any* value past its last given node, so extra nodes
-only push the clamping point further into the tail — they don't eliminate
-it for a raw value extreme enough to exceed even the extended range (as this
-one still does, at tau=0.9995). A complete fix would need genuine tail
-extrapolation (e.g. a fitted distribution beyond the last empirical
+stopping flat at 0.99. Verified on the exact pixel above, using the full
+33-year hindcast (not a small live-reproduced subset): the same raw value
+now maps to **231.61mm** — this time *below* CHIRPS' 234.57mm historical
+max at that pixel, i.e. the fix fully resolves the overshoot in this case,
+confirmed both by an isolated single-pixel retrain and by the actual
+`output/corrected_2026.nc` produced by the full pipeline (values match to
+5 significant figures). The root cause is still that `numpy.interp` clamps
+rather than extrapolates for *any* value past its last given node, so extra
+nodes only push the clamping point further into the tail rather than
+eliminating clamping altogether — a raw value extreme enough to exceed even
+the extended range would still be clamped. A complete fix would need genuine
+tail extrapolation (e.g. a fitted distribution beyond the last empirical
 quantile), which is a bigger modeling decision than this change and hasn't
 been implemented. Note also that `qdm.extrapolation: constant` in the config
 is currently descriptive only — the clamping behavior comes from
 `numpy.interp`'s hardcoded default, not from that field actually being read
 anywhere in the code.
 
-This fix changes the trained model, so the full 33-year cross-validation,
-the 2026 operational forecast, and both evaluation notebooks were **not**
-automatically re-run with it (a multi-hour undertaking) — check whether
-that's since happened before assuming [Full results](#full-results) reflects
-the new quantile grid.
+A quick domain-wide scan (comparing each pixel's 2026 corrected max, across
+all months/members, against CHIRPS' historical max at that same pixel/month)
+still finds several hundred pixels per month where the corrected max exceeds
+the historical one. That is **not**, on its own, evidence the fix is
+incomplete: 2026's corrected forecast has 25 ensemble members × ~30 days per
+month (750 samples) against CHIRPS' 33 single yearly values per month, so
+some number of new-record values are expected from sample-size alone, not
+necessarily from residual clamping. Distinguishing genuine residual overshoot
+from this sampling effect would need a more careful analysis (e.g. comparing
+the *old* grid's exceedance count/magnitude against the *new* grid's, pixel
+by pixel) than has been done here — flagged as a follow-up, not resolved.
+
+The full 33-year cross-validation, the 2026 operational forecast, and the
+evaluation suite have now been re-run with this fix (see [Full results](#full-results) — those numbers already reflect the new quantile grid); the two
+evaluation notebooks still need rebuilding against the fresh output, which
+hasn't happened yet as of this writing.
 
 ## Rebuilding the CHIRPS reference
 

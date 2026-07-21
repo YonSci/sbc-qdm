@@ -35,6 +35,9 @@ import xarray as xr
 from xsdba import Grouper
 from xsdba.processing import adapt_freq
 
+from sbc_qdm.chunking import SAMPLE_DIMS, SPATIAL_CHUNK, rechunk_for_grouping
+from sbc_qdm.chunking import sample_dims as _sample_dims
+
 # This machine runs with very little free memory in practice (observed as low
 # as ~2.4 GiB available under normal desktop load -- VS Code, browser, etc.),
 # and a MemoryError as small as ~37 MiB surfaced even in a single fresh
@@ -42,8 +45,6 @@ from xsdba.processing import adapt_freq
 # how many chunks are processed concurrently (and therefore peak memory),
 # trading some speed for reliability under that constraint.
 dask.config.set(scheduler="threads", num_workers=2)
-
-SAMPLE_DIMS = ("time", "realization")
 
 
 def equally_spaced_quantiles(n: int) -> np.ndarray:
@@ -72,28 +73,7 @@ def evaluation_quantiles(n: int, tail_quantiles: tuple[float, ...] = ()) -> np.n
     return np.sort(np.unique(np.concatenate([body, np.asarray(tail_quantiles, dtype=float)])))
 
 
-def _sample_dims(da: xr.DataArray) -> list[str]:
-    return [d for d in SAMPLE_DIMS if d in da.dims]
-
-
-SPATIAL_CHUNK = 5
-
-
-def _rechunk_for_grouping(da: xr.DataArray) -> xr.DataArray:
-    """Single chunk along time/realization (required by xsdba's grouping), tiled over lat/lon.
-
-    Materializing a whole month's slice across the full spatial domain at
-    once (48x60 pixels x ~930 samples x 51 members) is ~1 GiB and repeatedly
-    hit MemoryError under Windows' allocator once xsdba's internal groupby
-    needed a second same-sized scratch array. Keeping lat/lon dask-chunked
-    bounds peak memory per block to a few tens of MB regardless of domain size.
-    A 37 MiB single-block allocation still failed under this machine's actual
-    available memory (as low as ~2.4 GiB free under normal desktop load), so
-    this is tiled smaller (5x5) than the minimum that failed.
-    """
-    chunks = {d: -1 for d in SAMPLE_DIMS if d in da.dims}
-    chunks.update({d: SPATIAL_CHUNK for d in ("lat", "lon") if d in da.dims})
-    return da.chunk(chunks)
+_rechunk_for_grouping = rechunk_for_grouping  # local alias, kept for this module's existing call sites
 
 
 def _train_one_month(ref_m: xr.DataArray, hist_m: xr.DataArray, quantiles: np.ndarray, adapt_freq_thresh: str) -> tuple[xr.DataArray, xr.DataArray]:

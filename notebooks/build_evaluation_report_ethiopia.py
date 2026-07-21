@@ -87,6 +87,8 @@ EVAL_DIR = OUTPUT_DIR / "evaluation"
 FIGURES_DIR = OUTPUT_DIR / "figures_ethiopia"
 EVAL_FIGURES_DIR = EVAL_DIR / "figures_ethiopia"
 SHAPEFILE_PATH = PROJECT_ROOT / "data" / "eth_shapefile" / "eth_admin0.shp"
+FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+EVAL_FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def show(path: Path):
@@ -493,7 +495,7 @@ comparable to the full-domain's ~48%). ACC drops slightly after correction
 here too (0.261 -> 0.211), the same trade-off as the full domain. One
 genuine difference: **interannual variability ratio actually improves within
 Ethiopia** (0.759 -> 0.789, moving toward the ideal of 1.0), unlike the
-full domain where it moved further away (1.105 -> 0.831) -- a case where
+full domain where it moved further away (1.105 -> 0.819) -- a case where
 Ethiopia-specific results tell a more favorable story than the aggregate
 figure alone would suggest.
 """
@@ -628,34 +630,27 @@ show(EVAL_FIGURES_DIR / "jjas_2026_total.png")
 md(
     """
 **Reading it:** Ethiopia's 2026 JJAS-total ensemble mean is **444.0mm
-(raw) -> 352.5mm (corrected)**, a ~21% reduction, similar in proportion to
+(raw) -> 352.9mm (corrected)**, a ~21% reduction, similar in proportion to
 the full-domain's ~20% but at meaningfully higher absolute totals (vs
-319.0mm/256.6mm domain-wide) -- Ethiopia's highlands simply receive more
+319.0mm/256.5mm domain-wide) -- Ethiopia's highlands simply receive more
 rain than the full bounding box's average. The min/max range is identical
-to the full-domain figures (6.4/1432.3mm raw, 0.01/1305.4mm corrected),
+to the full-domain figures (6.4/1432.3mm raw, 0.08/1310.0mm corrected),
 since those extremes happen to fall on pixels that are inside Ethiopia's
 border anyway.
 
-**On that corrected maximum (1305mm, and the daily 257mm/day maximum behind
-it):** it's traced to an exact pixel/day in `evaluation_report.ipynb`'s
-Section 8.1 -- and that pixel (lat 7.875N, lon 47.125E, Ethiopia's Somali
-Region near the Somalia border) is inside Ethiopia's boundary, so that
-investigation applies directly here, not just to the full-domain report.
-The short version: raw ECMWF's 99th-percentile October rainfall at that
-pixel (~17mm) is far below CHIRPS' own 99th percentile there (~82mm) -- a
-real, large model bias -- but `numpy.interp`'s clamping behavior beyond the
-last quantile node (0.99) applies the same flat ~4.7x adjustment factor to
-*any* raw value past that threshold, regardless of how far into the tail it
-sits. An already-outlier ensemble member (54.5mm, vs ~21mm for the
-next-highest member) gets pushed to 257mm -- nearly double CHIRPS' own
-134mm historical maximum at that pixel.
-
-`evaluation_report.ipynb` Section 8.2 tests a fix (extra quantile nodes
-concentrated in the tail): it's a genuine but partial improvement for this
-pixel (257mm -> ~180mm, still above CHIRPS' 133.5mm max there), since
-`numpy.interp` still clamps beyond the extended grid's last node -- just
-further out. That fix changes the trained model and hasn't been rolled into
-a full re-run of either this notebook or the main one yet.
+**On that corrected maximum (1310mm, and the single most extreme daily value
+behind it):** it's traced to an exact pixel/day in `evaluation_report.ipynb`'s
+Section 8.1 -- lat 7.625N, lon 47.125E, Ethiopia's Somali Region near the
+Somalia border, inside Ethiopia's boundary, so that investigation applies
+directly here too. The short version: `numpy.interp`'s clamping behavior
+beyond the last training quantile node applies the same flat adjustment
+factor to *any* raw value past that threshold, regardless of how far into
+the tail it sits, which let the pipeline's original 50-quantile-node grid
+overshoot CHIRPS' own historical maximum at that exact pixel by a few
+percent. `qdm.py`'s current tail-concentrated quantile grid (already the
+default used to produce every number in this notebook, not a hypothetical
+fix) resolves that specific overshoot -- see `evaluation_report.ipynb`
+Section 8 for the live, verified before/after comparison at that pixel.
 """
 )
 
@@ -768,7 +763,7 @@ md(
   are wetter than the full domain's average
 - Interannual variability ratio *improves* toward 1.0 after correction
   within Ethiopia (0.759 -> 0.789), the opposite direction from the full
-  domain (1.105 -> 0.831 -- moving further from ideal)
+  domain (1.105 -> 0.819 -- moving further from ideal)
 - 2026 JJAS totals are substantially higher in absolute terms (444.0mm raw
   / 352.5mm corrected vs 319.0mm/256.6mm domain-wide), and the May-Aug
   "drier than normal" signal for 2026 is less pronounced than the

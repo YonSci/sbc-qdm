@@ -13,45 +13,72 @@ import xarray as xr
 
 from sbc_qdm.config import DEFAULT_CONFIG_PATH, load_config
 from sbc_qdm.io import load_chirps_reference
+from sbc_qdm.methods import METHODS
 from sbc_qdm.pipeline import prepare_hindcast, prepare_target_year
 from sbc_qdm.preprocess import build_land_mask
-from sbc_qdm.qdm import apply_operational, apply_qdm, train_qdm
+from sbc_qdm.qdm import apply_operational
 from sbc_qdm.validate import bias_maps, crps_skill_score, rank_histogram, wet_day_frequency
 from sbc_qdm.verify.run import run_full_evaluation
 from sbc_qdm.viz import plot_all
 
 app = typer.Typer(help="QDM bias correction of ECMWF seasonal forecasts against CHIRPS.")
 
+# Trained-state shape per method -- see each methods/*.py module's docstring.
+# QDM's is ["af", "hist_q"], same two variable names _trained_to_dataset/
+# _dataset_to_trained always used, so its serialized qdm_trained.nc is
+# byte-for-byte the same as before this generalized to other methods.
+METHOD_STATE_VARS: dict[str, list[str]] = {
+    "qdm": ["af", "hist_q"],
+    "linear_scaling": ["factor"],
+    "delta_change": ["delta"],
+    "variance_scaling": ["hist_mean", "hist_std", "ref_mean", "ref_std"],
+    "power_transformation": ["a", "b"],
+    "empirical_quantile_mapping": ["ref_q", "hist_q"],
+    "detrended_quantile_mapping": ["ref_q", "hist_q", "mu_hist"],
+}
 
-def _trained_to_dataset(trained: dict[int, tuple[xr.DataArray, xr.DataArray]]) -> xr.Dataset:
+
+def _trained_to_dataset(trained: dict[int, tuple[xr.DataArray, ...]], method: str = "qdm") -> xr.Dataset:
+    var_names = METHOD_STATE_VARS[method]
     months = sorted(trained.keys())
     month_index = xr.DataArray(months, dims="month", name="month")
-    af = xr.concat([trained[m][0] for m in months], dim=month_index)
-    hist_q = xr.concat([trained[m][1] for m in months], dim=month_index)
-    return xr.Dataset({"af": af, "hist_q": hist_q})
+    if len(var_names) == 1:
+        return xr.Dataset({var_names[0]: xr.concat([trained[m] for m in months], dim=month_index)})
+    return xr.Dataset({name: xr.concat([trained[m][i] for m in months], dim=month_index) for i, name in enumerate(var_names)})
 
 
-def _dataset_to_trained(ds: xr.Dataset) -> dict[int, tuple[xr.DataArray, xr.DataArray]]:
-    return {int(m): (ds["af"].sel(month=m), ds["hist_q"].sel(month=m)) for m in ds.month.values}
+def _dataset_to_trained(ds: xr.Dataset, method: str = "qdm") -> dict[int, tuple[xr.DataArray, ...]]:
+    var_names = METHOD_STATE_VARS[method]
+    if len(var_names) == 1:
+        return {int(m): ds[var_names[0]].sel(month=m) for m in ds.month.values}
+    return {int(m): tuple(ds[name].sel(month=m) for name in var_names) for m in ds.month.values}
+
+
+def _method_output_dir(cfg: dict, method: str) -> Path:
+    """QDM keeps its existing top-level output/ paths (backward compatible with
+    already-computed results/tests/notebooks); every other method gets its own
+    output/methods/{method}/ subtree so nothing clobbers QDM's outputs."""
+    out_dir = Path(cfg["paths"]["output_dir"])
+    return out_dir if method == "qdm" else out_dir / "methods" / method
 
 
 @app.command()
-def train(config: str = str(DEFAULT_CONFIG_PATH)):
-    """Fit QDM on the full hindcast record and save the trained adjustment."""
+def train(config: str = str(DEFAULT_CONFIG_PATH), method: str = "qdm"):
+    """Fit a bias-correction method on the full hindcast record and save the trained state."""
     cfg = load_config(config)
     _, _, ref, hist = prepare_hindcast(cfg)
 
-    trained = train_qdm(ref, hist, cfg)
+    trained = METHODS[method].train_fn(ref, hist, cfg)
 
-    out_dir = Path(cfg["paths"]["output_dir"])
+    out_dir = _method_output_dir(cfg, method)
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "qdm_trained.nc"
-    _trained_to_dataset(trained).to_netcdf(out_path)
-    typer.echo(f"Trained QDM saved to {out_path}")
+    out_path = out_dir / ("qdm_trained.nc" if method == "qdm" else "trained.nc")
+    _trained_to_dataset(trained, method).to_netcdf(out_path)
+    typer.echo(f"Trained {METHODS[method].display_name} saved to {out_path}")
 
 
 @app.command("cross-validate-fold")
-def cross_validate_fold(config: str = str(DEFAULT_CONFIG_PATH), year: int = typer.Option(...)):
+def cross_validate_fold(config: str = str(DEFAULT_CONFIG_PATH), year: int = typer.Option(...), method: str = "qdm"):
     """Run a single leave-one-year-out fold and save it.
 
     Internal command used by `cross-validate` -- it shells out to this, one
@@ -72,17 +99,18 @@ def cross_validate_fold(config: str = str(DEFAULT_CONFIG_PATH), year: int = type
     hist_train = hist.sel(time=~is_held_out)
     sim_holdout = hist.sel(time=is_held_out)
 
-    trained = train_qdm(ref_train, hist_train, cfg)
-    corrected = apply_qdm(sim_holdout, trained, cfg).compute()
+    spec = METHODS[method]
+    trained = spec.train_fn(ref_train, hist_train, cfg)
+    corrected = spec.apply_fn(sim_holdout, trained, cfg).compute()
 
-    fold_dir = Path(cfg["paths"]["output_dir"]) / "loyo_folds"
+    fold_dir = _method_output_dir(cfg, method) / "loyo_folds"
     fold_dir.mkdir(parents=True, exist_ok=True)
     corrected.to_netcdf(fold_dir / f"{year}.nc")
     typer.echo(f"fold {year} done")
 
 
 @app.command("cross-validate")
-def cross_validate(config: str = str(DEFAULT_CONFIG_PATH)):
+def cross_validate(config: str = str(DEFAULT_CONFIG_PATH), method: str = "qdm"):
     """Run leave-one-year-out cross-validation over the hindcast record.
 
     Drives cross-validate-fold as one subprocess per year (see its docstring
@@ -94,7 +122,7 @@ def cross_validate(config: str = str(DEFAULT_CONFIG_PATH)):
     years = sorted(set(hist.time.dt.year.values.tolist()))
     del ref, hist  # driver only needs the year list; drop the lazy arrays before spawning subprocesses
 
-    out_dir = Path(cfg["paths"]["output_dir"])
+    out_dir = _method_output_dir(cfg, method)
     fold_dir = out_dir / "loyo_folds"
     fold_dir.mkdir(parents=True, exist_ok=True)
 
@@ -106,7 +134,7 @@ def cross_validate(config: str = str(DEFAULT_CONFIG_PATH)):
 
         typer.echo(f"[{i + 1}/{len(years)}] running fold {year} in a subprocess...")
         result = subprocess.run(
-            [sys.executable, "-m", "sbc_qdm.cli", "cross-validate-fold", "--config", config, "--year", str(year)],
+            [sys.executable, "-m", "sbc_qdm.cli", "cross-validate-fold", "--config", config, "--year", str(year), "--method", method],
         )
         if result.returncode != 0:
             raise typer.Exit(code=result.returncode)
@@ -143,15 +171,20 @@ def cross_validate(config: str = str(DEFAULT_CONFIG_PATH)):
 
 
 @app.command()
-def apply(config: str = str(DEFAULT_CONFIG_PATH), year: Optional[int] = None):
-    """Apply the trained QDM adjustment to the operational forecast year."""
+def apply(config: str = str(DEFAULT_CONFIG_PATH), year: Optional[int] = None, method: str = "qdm"):
+    """Apply the trained bias-correction method to the operational forecast year."""
     cfg = load_config(config)
     chirps, mask, ref, hist = prepare_hindcast(cfg)
     target = prepare_target_year(cfg, chirps, mask, year)
 
-    corrected = apply_operational(ref, hist, target, cfg)
+    spec = METHODS[method]
+    if method == "qdm":
+        corrected = apply_operational(ref, hist, target, cfg)  # QDM's own train+apply-in-one-call helper
+    else:
+        trained = spec.train_fn(ref, hist, cfg)
+        corrected = spec.apply_fn(target, trained, cfg)
 
-    out_dir = Path(cfg["paths"]["output_dir"])
+    out_dir = _method_output_dir(cfg, method)
     out_dir.mkdir(parents=True, exist_ok=True)
     target_year = year or cfg["time"]["operational_year"]
     out_path = out_dir / f"corrected_{target_year}.nc"
@@ -211,24 +244,26 @@ def plot_diagnostics(config: str = str(DEFAULT_CONFIG_PATH)):
 
 
 @app.command()
-def evaluate(config: str = str(DEFAULT_CONFIG_PATH)):
-    """Full scientific evaluation: daily/monthly/JJAS-seasonal, spatial, raw vs QDM-corrected.
+def evaluate(config: str = str(DEFAULT_CONFIG_PATH), method: str = "qdm"):
+    """Full scientific evaluation: daily/monthly/JJAS-seasonal, spatial, raw vs corrected.
 
-    Requires output/loyo_corrected.nc (run cross-validate first). Computes
-    deterministic (MBE/MAE/PBIAS/RMSE/SD & CV ratio), distributional (Q-Q/
-    ECDF/PDF, quantile bias, wet-day frequency bias), wet/dry spell
-    distributions, deterministic skill vs climatology (ACC/Spearman ACC/
-    RMSESS/interannual variability ratio), probabilistic tercile-category
-    skill (RPSS/BSS/ROC) and CRPS/CRPSS, ensemble calibration (spread-skill
-    ratio, reliability diagram), and spatial performance (pattern
-    correlation, spatial RMSE) -- see src/sbc_qdm/verify/ for definitions.
+    Requires {output_dir}/loyo_corrected.nc for the given method (runs
+    cross-validate first if missing). Computes deterministic (MBE/MAE/PBIAS/
+    RMSE/SD & CV ratio), distributional (Q-Q/ECDF/PDF, quantile bias, wet-day
+    frequency bias), wet/dry spell distributions, deterministic skill vs
+    climatology (ACC/Spearman ACC/RMSESS/interannual variability ratio),
+    probabilistic tercile-category skill (RPSS/BSS/ROC) and CRPS/CRPSS,
+    ensemble calibration (spread-skill ratio, reliability diagram), and
+    spatial performance (pattern correlation, spatial RMSE) -- see
+    src/sbc_qdm/verify/ for definitions. Generic across methods: nothing in
+    verify/run.py depends on which correction method produced "corrected".
     """
     cfg = load_config(config)
-    out_dir = Path(cfg["paths"]["output_dir"])
+    out_dir = _method_output_dir(cfg, method)
     loyo_path = out_dir / "loyo_corrected.nc"
     if not loyo_path.exists():
         typer.echo("No cached loyo_corrected.nc found -- running cross-validation first.")
-        cross_validate(config)
+        cross_validate(config, method)
 
     chirps = load_chirps_reference(cfg)
     mask = build_land_mask(chirps)
@@ -265,6 +300,69 @@ def _print_diagnostics_summary(diagnostics: xr.Dataset) -> None:
     typer.echo(f"CRPS raw:        {float(diagnostics['crps_raw'].mean()):.3f}")
     typer.echo(f"CRPS corrected:  {float(diagnostics['crps_corrected'].mean()):.3f}")
     typer.echo(f"CRPSS (skill vs raw): {float(diagnostics['crpss'].mean()):.3f}")
+
+
+@app.command("compare-methods")
+def compare_methods(config: str = str(DEFAULT_CONFIG_PATH)):
+    """Cross-validate + evaluate every method in config["methods"]["compare"],
+    then build a comparison summary/figure across all of them.
+
+    Resumable per-method-per-stage (same skip-if-exists convention as
+    cross-validate/evaluate individually) -- safe to re-invoke after a
+    crash/interruption partway through.
+    """
+    cfg = load_config(config)
+    methods = cfg["methods"]["compare"]
+
+    method_eval_dirs: dict[str, Path] = {}
+    for method in methods:
+        out_dir = _method_output_dir(cfg, method)
+        loyo_path = out_dir / "loyo_corrected.nc"
+        if not loyo_path.exists():
+            typer.echo(f"[compare-methods] {method}: no loyo_corrected.nc, running cross-validate...")
+            cross_validate(config, method)
+        else:
+            typer.echo(f"[compare-methods] {method}: cross-validate already done, skipping")
+
+        eval_dir = out_dir / "evaluation"
+        if not (eval_dir / "jjas_probabilistic.nc").exists():
+            typer.echo(f"[compare-methods] {method}: no evaluation output, running evaluate...")
+            evaluate(config, method)
+        else:
+            typer.echo(f"[compare-methods] {method}: evaluate already done, skipping")
+
+        # Per-fold files (one per hindcast year, ~200MB each) are only needed
+        # for resumability while cross-validate is still running -- once both
+        # loyo_corrected.nc and the evaluation suite exist, keeping them just
+        # burns disk (this bit us running the 6-method comparison: each
+        # method's fold cache alone was ~6.7GB, and this machine's free space
+        # is already tight/shared with unrelated work on the same drive).
+        fold_dir = out_dir / "loyo_folds"
+        if fold_dir.exists() and loyo_path.exists() and (eval_dir / "jjas_probabilistic.nc").exists():
+            import shutil
+            shutil.rmtree(fold_dir)
+            typer.echo(f"[compare-methods] {method}: removed loyo_folds/ (no longer needed, both stages complete)")
+
+        method_eval_dirs[method] = eval_dir
+
+    from sbc_qdm.verify.compare import comparison_summary, plot_method_comparison
+
+    summary = comparison_summary(method_eval_dirs)
+    comparison_dir = Path(cfg["paths"]["output_dir"]) / "method_comparison"
+    comparison_dir.mkdir(parents=True, exist_ok=True)
+    summary.to_netcdf(comparison_dir / "comparison_summary.nc")
+    plot_method_comparison(summary, comparison_dir / "comparison.png")
+
+    typer.echo("--- Method comparison (domain mean) ---")
+    for method in ["raw", *methods]:
+        row = summary.sel({"method": method})
+        typer.echo(
+            f"{method:28s} PBIAS={float(row['daily_pbias']):+7.2f}%  "
+            f"RMSE={float(row['daily_rmse']):6.3f} mm/day  "
+            f"JJAS-RMSE={float(row['jjas_rmse']):7.2f} mm  "
+            f"JJAS-CRPSS={float(row['jjas_crpss']):+6.3f}"
+        )
+    typer.echo(f"Comparison summary saved to {comparison_dir}")
 
 
 if __name__ == "__main__":
