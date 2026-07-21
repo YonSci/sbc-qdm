@@ -345,13 +345,18 @@ def compare_methods(config: str = str(DEFAULT_CONFIG_PATH)):
 
         method_eval_dirs[method] = eval_dir
 
-    from sbc_qdm.verify.compare import comparison_summary, plot_method_comparison
+    from sbc_qdm.verify.compare import comparison_summary, plot_method_comparison, plot_method_comparison_maps
 
     summary = comparison_summary(method_eval_dirs)
     comparison_dir = Path(cfg["paths"]["output_dir"]) / "method_comparison"
     comparison_dir.mkdir(parents=True, exist_ok=True)
     summary.to_netcdf(comparison_dir / "comparison_summary.nc")
     plot_method_comparison(summary, comparison_dir / "comparison.png")
+    # PBIAS isn't used here (unlike the domain-mean bar chart, where averaging
+    # smooths it out): per-pixel it blows up near-arbitrarily at the handful of
+    # near-zero-rainfall desert pixels (dividing by a tiny observed mean), which
+    # saturates the color scale and washes out every other pixel's real signal.
+    plot_method_comparison_maps(method_eval_dirs, comparison_dir / "comparison_maps_mbe.png", var="mbe", metric_name="Mean Bias Error", units="mm/day")
 
     typer.echo("--- Method comparison (domain mean) ---")
     for method in ["raw", *methods]:

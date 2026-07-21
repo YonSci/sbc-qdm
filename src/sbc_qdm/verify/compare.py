@@ -8,9 +8,20 @@ from __future__ import annotations
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import xarray as xr
+from matplotlib.colors import TwoSlopeNorm
 
-from sbc_qdm.viz import CAT_CORRECTED, CAT_RAW, INK_PRIMARY, INK_SECONDARY, SURFACE
+from sbc_qdm.viz import (
+    CAT_CORRECTED,
+    CAT_RAW,
+    DIVERGING_BLUE_RED,
+    INK_MUTED,
+    INK_PRIMARY,
+    INK_SECONDARY,
+    SURFACE,
+    spatial_panel,
+)
 
 HEADLINE_METRICS = [
     ("daily_mbe", "Daily MBE (mm/day)"),
@@ -100,5 +111,57 @@ def plot_method_comparison(summary: xr.Dataset, out_path: Path) -> None:
     axes[0].legend(frameon=False, labelcolor=INK_SECONDARY, fontsize=7.5, loc="upper left")
     fig.suptitle("Bias-correction method comparison (33-year leave-one-year-out cross-validation)", color=INK_PRIMARY, fontsize=11, y=1.04)
     fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
+    plt.close(fig)
+
+
+def plot_method_comparison_maps(
+    method_eval_dirs: dict[str, Path],
+    out_path: Path,
+    var: str = "mbe",
+    metric_name: str = "Mean Bias Error",
+    units: str = "mm/day",
+) -> None:
+    """Small-multiples spatial map grid: raw + one panel per method, sharing a
+    single diverging colorbar so the *spatial pattern* of over/under-correction
+    is directly comparable method-to-method. This is the complement to
+    plot_method_comparison()'s domain-mean bar chart, which can't distinguish
+    two methods that land on the same domain-mean bias via very different
+    spatial patterns (e.g. one overcorrecting the wet northwest while
+    undercorrecting the dry southeast, versus a spatially uniform residual).
+    """
+    fields: dict[str, xr.DataArray] = {}
+    raw_field = None
+    for method, eval_dir in method_eval_dirs.items():
+        daily = xr.open_dataset(eval_dir / "daily_deterministic.nc")
+        if raw_field is None:
+            raw_field = daily[f"raw_{var}"]
+        fields[method] = daily[f"corrected_{var}"]
+
+    panels = [("Raw ECMWF", raw_field), *fields.items()]
+    n = len(panels)
+    ncols = 4
+    nrows = -(-n // ncols)  # ceil division
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.3 * ncols, 3.1 * nrows), facecolor=SURFACE)
+    axes = np.atleast_1d(axes).flatten()
+
+    vmax = float(max(np.nanmax(np.abs(field.values)) for _, field in panels))
+    norm = TwoSlopeNorm(vcenter=0, vmin=-vmax, vmax=vmax)
+
+    mesh = None
+    for ax, (label, field) in zip(axes, panels):
+        mesh = spatial_panel(ax, field, DIVERGING_BLUE_RED, norm=norm, title=label)
+        if label == "qdm":
+            for spine in ax.spines.values():
+                spine.set_edgecolor(CAT_CORRECTED)
+                spine.set_linewidth(2)
+
+    for ax in axes[n:]:
+        ax.axis("off")
+
+    cbar = fig.colorbar(mesh, ax=axes[:n].tolist(), orientation="horizontal", fraction=0.04, pad=0.1, aspect=50)
+    cbar.set_label(f"{metric_name} ({units})", color=INK_SECONDARY, fontsize=9)
+    cbar.ax.tick_params(colors=INK_MUTED, labelsize=8)
+    fig.suptitle(f"{metric_name}: spatial pattern by correction method", color=INK_PRIMARY, fontsize=12, y=1.02)
     fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
     plt.close(fig)

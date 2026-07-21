@@ -509,7 +509,7 @@ directory (~6.7GB each) once both its cross-validation and evaluation stages
 are confirmed complete, since keeping all of them simultaneously across 6+
 methods gets expensive fast. Output under `output/methods/{method}/` (mirrors
 the single-method CLI layout) and `output/method_comparison/`
-(`comparison_summary.nc`, `comparison.png`).
+(`comparison_summary.nc`, `comparison.png`, `comparison_maps_mbe.png`).
 
 ![Bias-correction method comparison across all 7 methods](docs/figures/method_comparison.png)
 
@@ -538,6 +538,29 @@ the single-method CLI layout) and `output/method_comparison/`
   — consistent with both methods correcting the mean/spread of the *whole*
   distribution at once rather than mapping through it quantile-by-quantile,
   so they can't correct a bias that varies across the distribution's range.
+  The domain mean doesn't show *where* that residual bias sits, though —
+  the spatial map below does:
+
+![Mean bias error spatial pattern across all 7 correction methods](docs/figures/method_comparison_maps.png)
+
+  Delta Change and Variance Scaling's residual wet bias isn't spread evenly
+  across the domain — it's concentrated in almost exactly the same
+  northwest/central region where raw ECMWF's own wet bias was worst (compare
+  against the raw panel, top-left), while QDM, Linear Scaling, EQM, DQM, and
+  Power Transformation all show a visually flat, near-zero residual across
+  the whole domain instead. All these methods fit a correction per pixel per
+  month, so spatial resolution isn't the difference — this is a leave-one-
+  year-out (out-of-sample) map, and it's specifically the **additive**
+  methods (Delta Change's fixed offset, and Variance Scaling's initial
+  mean-removal step) that generalize worse in exactly the wettest, most
+  variable pixels: a fixed absolute delta learned from 32 training years
+  doesn't scale with whatever a held-out year's own raw magnitude happens to
+  be, so it over/undershoots by the most in pixels where year-to-year swings
+  in raw rainfall are themselves largest in absolute terms. Linear Scaling's
+  multiplicative ratio scales naturally with the held-out year's own raw
+  value instead of shifting it by a fixed amount — the standard reason
+  ratio-based correction is generally preferred over additive for
+  precipitation specifically.
 - **Linear Scaling — the simplest method here — actually posts the best
   JJAS-total RMSE and CRPSS**, edging out QDM. This isn't a knock against
   QDM: JJAS-total RMSE and CRPSS are aggregate, mean-focused skill scores,
