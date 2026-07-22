@@ -1,10 +1,21 @@
 # Spatial Bias Correction - Quantile Delta Mapping (SBC-QDM)
 
-**Bias-correcting ECMWF seasonal rainfall forecasts against CHIRPS observations, for the Horn of Africa (Ethiopia).**
+**Bias-correcting ECMWF seasonal rainfall forecasts against CHIRPS observations across the Horn of Africa, with an Ethiopia-focused deep dive.**
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Tests](https://img.shields.io/badge/tests-pytest-informational)
+
+> Raw ECMWF tells you it will rain 32% more than it actually will, every May,
+> for 33 years running. Quantile Delta Mapping fixes that — but so, almost as
+> well, does the simplest possible alternative: one multiplicative ratio per
+> pixel. This repo builds QDM, validates it under honest cross-validation
+> (never scoring a year the model trained on), then benchmarks it against 6
+> competing methods to find out where the complexity actually pays off, where
+> it doesn't, and where the fix quietly creates a new problem of its own
+> (spoiler: the extreme tail). Every claim below — including the
+> uncomfortable ones — was checked against the underlying data before being
+> written down, not just asserted.
 
 ---
 
@@ -32,26 +43,29 @@
 
 Raw seasonal forecast output is not directly trustworthy: coarse-resolution global models carry systematic, well-documented wet/dry biases that swamp the actual forecast signal at the scale humanitarian and agricultural decisions need.
 
-This project bias-corrects ECMWF's raw forecast against CHIRPS a
-high-resolution, station-blended satellite rainfall product treated as ground truth — over a Horn of Africa domain (roughly Ethiopia and its immediate neighbors, 3.5-14.5°N, 33.5-47.5°E), using 33 years of hindcasts (1993-2025) to learn the correction and validating it the way you'd want before trusting it operationally: **leave-one-year-out cross-validation**,
-never scoring a year the model was trained on.
-
+This project bias-corrects ECMWF's raw forecast against CHIRPS — a
+high-resolution, station-blended satellite rainfall product treated as ground truth — over a Horn of Africa domain (roughly Ethiopia and its immediate neighbors, 3.5-14.5°N, 33.5-47.5°E), using 33 years of hindcasts (1993-2025) to learn the correction and validating it the way you'd want before trusting it operationally: **leave-one-year-out cross-validation**, never scoring a year the model was trained on.
 
 ## What this does
 
-- **Quantile Delta Mapping (QDM)**, fit per pixel and per calendar month, correcting the full shape of the forecast distribution not just its mean.
+- **Quantile Delta Mapping (QDM)**, fit per pixel and per calendar month, correcting the full shape of the forecast distribution — not just its mean.
 - **Ensemble-aware**: all members pooled for training, corrected
   member-wise so ensemble spread (a proxy for forecast uncertainty) is preserved.
 - **Validated honestly**: every skill number reported here comes from leave-one-year-out cross-validation, not in-sample fit quality.
-- **Evaluated thoroughly**: All scientific verification suite
-  (deterministic bias metrics, distributional similarity, spell persistence, spatial pattern skill, monthly/seasonal skill vs. climatology, probabilistic ensemble skill, calibration) at daily, monthly, and JJAS-seasonal scales  not just "the mean bias went down."
+- **Evaluated thoroughly**: a full scientific verification suite
+  (deterministic bias metrics, distributional similarity, spell persistence, spatial pattern skill, monthly/seasonal skill vs. climatology, probabilistic ensemble skill, calibration) at daily, monthly, and JJAS-seasonal scales — not just "the mean bias went down."
 - **Honest about what it doesn't fix**: QDM is a purely marginal correction.
-  It doesn't touch day-to-day persistence (wet/dry spell lengths) or the ensemble's ability to discriminate above/below-normal seasons (ROC skill) see [Known limitations](#known-limitations).
+  It doesn't touch day-to-day persistence (wet/dry spell lengths) or the ensemble's ability to discriminate above/below-normal seasons (ROC skill) — see [Known limitations](#known-limitations).
 - **Benchmarked against 6 alternative correction methods** (Linear Scaling,
   Delta Change, Variance Scaling, Power Transformation, Empirical Quantile
   Mapping, Detrended Quantile Mapping), all run through the identical
   cross-validation and evaluation pipeline so the comparison is apples-to-apples
   — see [Method comparison](#method-comparison).
+
+**Three findings worth knowing before you dig in:**
+1. **The simplest method in the lineup — Linear Scaling, one ratio per pixel per month — actually beats QDM on JJAS-total RMSE and CRPSS.** Not a fluke: it's exactly the metric a mean-correcting method should win on. See [Method comparison](#method-comparison) for what QDM buys you that Linear Scaling doesn't.
+2. **QDM's extreme-tail overshoot is real, and the fix for it doesn't fully work** — the worst case, once actually searched for domain-wide rather than eyeballed, is a raw value corrected to **4.17x** CHIRPS' own historical maximum. One of the two other quantile-mapping methods tested (EQM) has *zero* overshoot at that exact pixel, for a structural reason explained in [Known limitations](#known-limitations).
+3. **A method built specifically to preserve more forecast signal (DQM) ends up with the worst anomaly-correlation drop of all seven** — localized to one small region, unexplained, and reported rather than hidden.
 
 ## Results at a glance
 
@@ -86,12 +100,13 @@ flowchart LR
     B[ECMWF SEAS5\n1° forecast, 51 members] --> D1[De-accumulate + convert units]
     D1 --> D2[Mask to CHIRPS land pixels]
     D2 --> D3[Regrid 1° → 0.25°]
-    D3 --> C[Fit QDM\nper pixel, per calendar month]
+    D3 --> C[Fit correction\nQDM, or one of 6 alternatives]
     A --> C
     C --> E{Which mode?}
     E -->|Cross-validate| F[Leave-one-year-out\ntrain on 32 yrs, correct the 33rd]
     E -->|Operational| G[Train on all 33 yrs\ncorrect live 2026 forecast]
     F --> H[13-category evaluation suite\ndaily / monthly / JJAS]
+    H --> J[Method comparison\nsame pipeline, 7 methods, same footing]
     G --> I[Deployable corrected forecast]
 ```
 
@@ -530,6 +545,8 @@ whether the other 6 methods share QDM's known weaknesses (see
 [Known limitations](#known-limitations)) rather than only reporting where
 every method looks fine:
 
+**Bias metrics — everyone's expected to look reasonable here:**
+
 | Method | Daily PBIAS | Daily RMSE (mm/day) | JJAS-total RMSE (mm) | JJAS-total CRPSS |
 |---|---|---|---|---|
 | Raw ECMWF | +31.8% | 5.03 | 110.2 | -- |
@@ -540,6 +557,8 @@ every method looks fine:
 | Power Transformation | -1.4% | 4.95 | 55.5 | +0.405 |
 | Empirical Quantile Mapping | -2.7% | 4.95 | 56.6 | +0.387 |
 | Detrended Quantile Mapping | -3.5% | 4.95 | 53.7 | +0.419 |
+
+**Skill metrics — checking for QDM's known weaknesses in the other 6 methods:**
 
 | Method | JJAS ACC | JJAS ROC skill (above-normal) | Wet-spell bias (days) | Dry-spell bias (days) |
 |---|---|---|---|---|
@@ -909,4 +928,7 @@ Code in this repository is released under the [MIT License](LICENSE).
 
 This README documents the pipeline as of the latest evaluation run; see
 [Full results](#full-results) and [Known limitations](#known-limitations)
-for exactly what's been validated and what hasn't.
+for exactly what's been validated and what hasn't. If you came here looking
+for a bias-correction method that's been checked hard for where it breaks —
+not just where it wins — that's the point of this project, not an
+afterthought.
