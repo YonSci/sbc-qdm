@@ -345,18 +345,33 @@ def compare_methods(config: str = str(DEFAULT_CONFIG_PATH)):
 
         method_eval_dirs[method] = eval_dir
 
-    from sbc_qdm.verify.compare import comparison_summary, plot_method_comparison, plot_method_comparison_maps
+    from sbc_qdm.verify.compare import (
+        comparison_summary,
+        mbe_maps,
+        plot_method_comparison,
+        plot_method_comparison_maps,
+        roc_skill_maps,
+        wet_day_freq_bias_maps,
+    )
 
     summary = comparison_summary(method_eval_dirs)
     comparison_dir = Path(cfg["paths"]["output_dir"]) / "method_comparison"
     comparison_dir.mkdir(parents=True, exist_ok=True)
     summary.to_netcdf(comparison_dir / "comparison_summary.nc")
     plot_method_comparison(summary, comparison_dir / "comparison.png")
+
+    mbe_fields, mbe_raw = mbe_maps(method_eval_dirs)
+    plot_method_comparison_maps(mbe_fields, comparison_dir / "comparison_maps_mbe.png", "Mean Bias Error", "mm/day", raw_field=mbe_raw)
+
     # PBIAS isn't used here (unlike the domain-mean bar chart, where averaging
     # smooths it out): per-pixel it blows up near-arbitrarily at the handful of
     # near-zero-rainfall desert pixels (dividing by a tiny observed mean), which
     # saturates the color scale and washes out every other pixel's real signal.
-    plot_method_comparison_maps(method_eval_dirs, comparison_dir / "comparison_maps_mbe.png", var="mbe", metric_name="Mean Bias Error", units="mm/day")
+    wet_freq_fields, wet_freq_raw = wet_day_freq_bias_maps(method_eval_dirs)
+    plot_method_comparison_maps(wet_freq_fields, comparison_dir / "comparison_maps_wet_day_freq_bias.png", "Wet-day frequency bias", "", raw_field=wet_freq_raw)
+
+    roc_fields = roc_skill_maps(method_eval_dirs)
+    plot_method_comparison_maps(roc_fields, comparison_dir / "comparison_maps_roc_skill.png", "JJAS ROC skill, above-normal", "")
 
     typer.echo("--- Method comparison (domain mean) ---")
     for method in ["raw", *methods]:
@@ -365,7 +380,11 @@ def compare_methods(config: str = str(DEFAULT_CONFIG_PATH)):
             f"{method:28s} PBIAS={float(row['daily_pbias']):+7.2f}%  "
             f"RMSE={float(row['daily_rmse']):6.3f} mm/day  "
             f"JJAS-RMSE={float(row['jjas_rmse']):7.2f} mm  "
-            f"JJAS-CRPSS={float(row['jjas_crpss']):+6.3f}"
+            f"JJAS-CRPSS={float(row['jjas_crpss']):+6.3f}  "
+            f"ACC={float(row['jjas_acc']):+6.3f}  "
+            f"ROC-skill={float(row['jjas_roc_skill']):+6.3f}  "
+            f"wet-spell-bias={float(row['wet_spell_bias']):+5.2f}d  "
+            f"dry-spell-bias={float(row['dry_spell_bias']):+5.2f}d"
         )
     typer.echo(f"Comparison summary saved to {comparison_dir}")
 

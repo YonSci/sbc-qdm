@@ -509,11 +509,16 @@ directory (~6.7GB each) once both its cross-validation and evaluation stages
 are confirmed complete, since keeping all of them simultaneously across 6+
 methods gets expensive fast. Output under `output/methods/{method}/` (mirrors
 the single-method CLI layout) and `output/method_comparison/`
-(`comparison_summary.nc`, `comparison.png`, `comparison_maps_mbe.png`).
+(`comparison_summary.nc`, `comparison.png`, `comparison_maps_mbe.png`,
+`comparison_maps_wet_day_freq_bias.png`, `comparison_maps_roc_skill.png`).
 
 ![Bias-correction method comparison across all 7 methods](docs/figures/method_comparison.png)
 
-**33-year leave-one-year-out cross-validation, domain means:**
+**33-year leave-one-year-out cross-validation, domain means.** Top row: bias
+metrics every method predictably improves on. Bottom row: metrics checking
+whether the other 6 methods share QDM's known weaknesses (see
+[Known limitations](#known-limitations)) rather than only reporting where
+every method looks fine:
 
 | Method | Daily PBIAS | Daily RMSE (mm/day) | JJAS-total RMSE (mm) | JJAS-total CRPSS |
 |---|---|---|---|---|
@@ -525,6 +530,17 @@ the single-method CLI layout) and `output/method_comparison/`
 | Power Transformation | -1.4% | 4.95 | 55.5 | +0.405 |
 | Empirical Quantile Mapping | -2.7% | 4.95 | 56.6 | +0.387 |
 | Detrended Quantile Mapping | -3.5% | 4.95 | 53.7 | +0.419 |
+
+| Method | JJAS ACC | JJAS ROC skill (above-normal) | Wet-spell bias (days) | Dry-spell bias (days) |
+|---|---|---|---|---|
+| Raw ECMWF | +0.242 | +0.246 | +2.73 | +7.49 |
+| QDM | +0.202 | +0.243 | **+0.63** | +7.90 |
+| Linear Scaling | +0.190 | +0.235 | +2.85 | **+9.24** |
+| Delta Change | +0.209 | +0.249 | +2.86 | +7.81 |
+| Variance Scaling | +0.199 | +0.248 | +1.50 | +7.13 |
+| Power Transformation | +0.199 | +0.242 | +1.64 | +8.52 |
+| Empirical Quantile Mapping | +0.202 | +0.244 | +0.63 | +7.88 |
+| Detrended Quantile Mapping | **+0.148** | **+0.211** | +0.58 | +7.70 |
 
 **What this reveals:**
 - **The three quantile-mapping methods (QDM, EQM, DQM) land within a whisker
@@ -571,25 +587,83 @@ the single-method CLI layout) and `output/method_comparison/`
   data point, not swept under the rug — if all you need is a seasonal-total
   forecast, Linear Scaling is a serious, far cheaper option.
 - **Wet-day frequency correction is where the quantile-mapping methods pull
-  ahead clearly** (visible in the comparison figure's fourth panel): QDM, EQM,
+  ahead on the domain mean** (comparison figure's fourth panel): QDM, EQM,
   and DQM all apply a much larger wet-day-frequency correction than Delta
   Change or Power Transformation, since only the quantile-mapping methods use
-  `adapt_freq` to directly target ECMWF's tendency to drizzle too often.
+  `adapt_freq` to directly target ECMWF's tendency to drizzle too often. The
+  spatial map tells a more cautionary story, though:
+
+![Wet-day frequency bias spatial pattern across all 7 correction methods](docs/figures/method_comparison_maps_wet_day_freq.png)
+
+  QDM, EQM, DQM, and Power Transformation all turn deep blue across most of
+  the domain — i.e. they don't just fix raw's wet-day over-frequency, they
+  **overshoot it, making rain rarer than CHIRPS itself** almost everywhere,
+  not just where raw was worst. Linear Scaling and Delta Change undershoot
+  instead, leaving raw's original red patch (still too wet) largely intact.
+  Neither is obviously better — one trades "too wet, too often" for "too
+  dry, too rarely" — but it means the domain-mean wet-day-frequency-bias
+  number (QDM's -0.10 vs Delta Change's -0.01, from the comparison figure's
+  fourth panel) actually favors QDM *because* it overcorrects more
+  uniformly, not because it's closer to correct in most places.
+- **The three quantile-mapping methods' good spell-length numbers are
+  a side effect of `adapt_freq`, not evidence any of them model
+  persistence.** QDM/EQM/DQM's wet-spell bias (+0.6 days) is far better than
+  every other method's (+1.5 to +2.9 days) — but their dry-spell bias
+  (+7.7 to +7.9 days) is simultaneously *worse than raw itself* (+7.49) and
+  worse than Variance Scaling's +7.13 (though still better than Power
+  Transformation's +8.52 or Linear Scaling's +9.24, so it isn't literally
+  the worst of the group — just worse than doing nothing). `adapt_freq`
+  reclassifies some marginal drizzle days as dry before quantile-mapping,
+  which mechanically shortens measured wet spells (some previously-wet days
+  are no longer counted as wet) while lengthening the dry spells adjacent
+  to them — a direct consequence of the wet-day threshold correction, not a
+  sign these methods understand day-to-day sequencing. See
+  [Known limitations](#known-limitations) below.
+- **Detrended Quantile Mapping shows a clearly larger ACC drop and ROC-skill
+  dip than every other method** (ACC +0.148 vs the +0.19-0.21 range
+  everything else lands in; ROC skill +0.211 vs +0.235-0.249 elsewhere) —
+  unexpected, since DQM is designed as a refinement of EQM specifically to
+  *preserve* more of the target period's own signal, not less. The ROC-skill
+  spatial map below shows this isn't uniform degradation but concentrated
+  around 8.6°N, 38.9°E, where DQM's ROC skill (0.087 regional mean) is far
+  below both its own domain mean (0.211) and QDM's regional mean there
+  (0.217) — verified by direct comparison against QDM's map, not just
+  eyeballed:
+
+![JJAS ROC skill spatial pattern across all 7 correction methods](docs/figures/method_comparison_maps_roc_skill.png)
+
+  Flagged here rather than investigated further — this project doesn't have
+  a confirmed mechanism for it yet, unlike the Delta Change/Variance Scaling
+  finding above, which was checked against actual raw-ECMWF year-to-year
+  variability before being written up as a claim.
 
 ## Known limitations
 
 Being upfront about what this pipeline does *not* fix, rather than leaving
 it implicit:
 
-- **QDM has no mechanism to fix day-to-day persistence.** Wet/dry spell-length
-  distributions are barely changed by correction (see above) — it corrects
-  each day's magnitude independently.
-- **Tercile-discrimination ability (ROC skill) is unchanged by correction.**
-  QDM improves probability calibration (RPSS/BSS), not the ensemble's
-  underlying ability to rank above/below-normal seasons correctly.
-- **Anomaly correlation (ACC) drops slightly after correction** (0.242 ->
-  0.202, JJAS-total) — a real, small trade-off alongside the much larger
-  calibration gains.
+- **QDM has no explicit mechanism to fix day-to-day persistence** — it
+  corrects each day's magnitude independently. Its wet-spell-length bias
+  does improve substantially in [Method comparison](#method-comparison)'s
+  numbers (+2.73 days raw -> +0.63 days corrected), but that's a side effect
+  of `adapt_freq`'s wet-day reclassification, not genuine sequencing/
+  persistence modeling — the same correction simultaneously makes dry-spell
+  bias slightly *worse* (+7.49 -> +7.90 days), and non-`adapt_freq` methods
+  (Linear Scaling, Delta Change) see no comparable wet-spell improvement at
+  all despite also being marginal, per-day corrections.
+- **Tercile-discrimination ability (ROC skill) is essentially unchanged by
+  correction for most methods** (QDM: 0.246 -> 0.243, JJAS-total,
+  above-normal) — it improves probability calibration (RPSS/BSS), not the
+  ensemble's underlying ability to rank above/below-normal seasons
+  correctly. Detrended Quantile Mapping is a clear exception, dropping
+  further to 0.211 — see [Method comparison](#method-comparison) for the
+  spatial pattern; no confirmed mechanism for this one yet.
+- **Anomaly correlation (ACC) drops after correction** (0.242 -> 0.202 for
+  QDM, JJAS-total) — a real trade-off alongside the much larger calibration
+  gains, and not QDM-specific: every method in
+  [Method comparison](#method-comparison) shows some ACC drop, ranging from
+  Delta Change's 0.209 (mildest) to Detrended Quantile Mapping's 0.148
+  (worst, and unexplained).
 
 ![Q-Q plot: corrected quantiles diverging above CHIRPS and raw ECMWF beyond ~Q95](docs/figures/qq_plot.png)
 
