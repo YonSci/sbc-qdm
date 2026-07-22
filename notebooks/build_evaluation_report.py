@@ -798,17 +798,89 @@ change, and not implemented here. Note also that `config/domain.yaml`'s
 clamping behavior comes from `numpy.interp`'s hardcoded default, not from
 that field actually being read anywhere in the code.
 
-A quick domain-wide scan (each pixel's 2026 corrected max, across all
-months/members, against CHIRPS' historical max at that same pixel/month)
-still finds several hundred pixels per month where the corrected max exceeds
-the historical one. That is not, on its own, evidence the fix is incomplete:
-2026's corrected forecast has 25 ensemble members x ~30 days per month (750
-samples) against CHIRPS' 33 single yearly values per month, so some number of
-new-record values are expected from sample-size alone. Distinguishing
-genuine residual overshoot from this sampling effect would need a more
-careful pixel-by-pixel comparison of the old grid's exceedance count/
-magnitude against the new grid's -- flagged as a follow-up, not resolved
-here.
+"""
+)
+
+md(
+    """
+### 8.3 The follow-up: worst *relative* overshoot, domain-wide, and how EQM/DQM compare
+
+Section 8.1 checked a single pixel: the domain's single biggest *absolute*
+corrected value. That's the wrong search -- it's dominated by wet regions
+where large absolute numbers are unremarkable. The right search is the
+worst *ratio* of corrected-max to CHIRPS' own historical max at that same
+pixel/month, domain-wide. This was previously flagged as a follow-up and
+left undone; it's done here, live.
+"""
+)
+code(
+    """
+def worst_overshoot_ratio(corrected: xr.DataArray, chirps_ref: xr.DataArray, min_hist_max: float = 5.0):
+    \"\"\"Worst (corrected_max / chirps_hist_max) across all months/pixels,
+    restricted to pixels with a non-trivial CHIRPS historical max (avoids
+    near-zero-denominator desert pixels producing a meaningless huge ratio).
+    \"\"\"
+    worst_ratio, worst_info = 0.0, None
+    for month in range(5, 11):
+        chirps_m = chirps_ref.sel(time=chirps_ref.time.dt.month == month)
+        hist_max = chirps_m.max("time", skipna=True)
+        corrected_m = corrected.sel(time=corrected.time.dt.month == month)
+        corrected_max = corrected_m.max(("time", "realization"), skipna=True)
+        ratio = (corrected_max / hist_max).where(hist_max > min_hist_max)
+        m = float(ratio.max())
+        if m > worst_ratio:
+            idx = ratio.argmax(...)
+            worst_ratio = m
+            worst_info = (month, float(ratio.isel(idx).lat), float(ratio.isel(idx).lon), float(corrected_max.isel(idx)), float(hist_max.isel(idx)))
+    return worst_ratio, worst_info
+
+
+qdm_ratio, qdm_info = worst_overshoot_ratio(corrected_2026, chirps.where(mask))
+print(f"QDM worst overshoot ratio: {qdm_ratio:.2f}x at month={qdm_info[0]}, lat={qdm_info[1]}, lon={qdm_info[2]}")
+print(f"  corrected_max={qdm_info[3]:.1f}mm vs CHIRPS historical max={qdm_info[4]:.1f}mm")
+"""
+)
+code(
+    """
+eqm_corrected_2026 = xr.open_dataarray(OUTPUT_DIR / "methods" / "empirical_quantile_mapping" / "corrected_2026.nc")
+dqm_corrected_2026 = xr.open_dataarray(OUTPUT_DIR / "methods" / "detrended_quantile_mapping" / "corrected_2026.nc")
+
+eqm_ratio, eqm_info = worst_overshoot_ratio(eqm_corrected_2026, chirps.where(mask))
+dqm_ratio, dqm_info = worst_overshoot_ratio(dqm_corrected_2026, chirps.where(mask))
+
+print(f"EQM worst overshoot ratio: {eqm_ratio:.2f}x at month={eqm_info[0]}, lat={eqm_info[1]}, lon={eqm_info[2]}")
+print(f"DQM worst overshoot ratio: {dqm_ratio:.2f}x at month={dqm_info[0]}, lat={dqm_info[1]}, lon={dqm_info[2]}")
+"""
+)
+md(
+    """
+**This changes the conclusion of Section 8.2.** The wet-region pixel checked
+there is now within CHIRPS' historical range (ratio ~1.0) -- but the
+domain-wide search finds a dry-region pixel (14.625N, 47.375E, a pixel
+where CHIRPS' own 33-year May record never exceeds ~8mm) where an outlier
+raw ensemble member still gets corrected to **over 4x** CHIRPS' historical
+maximum there. Same clamping mechanism as Section 8.1, just surfacing as a
+large *relative* overshoot in a dry region instead of a large *absolute*
+one in a wet region -- the tail-quantile fix does not generalize across the
+whole domain.
+
+**EQM shows ~1.0x at the exact same pixel where QDM overshoots by 4x** --
+not a coincidence. EQM directly substitutes CHIRPS' own value at the
+estimated quantile rather than multiplying the raw value by a ratio, so it
+is structurally bounded by what CHIRPS has actually recorded; it cannot
+invent a value CHIRPS has never shown. QDM and DQM both apply a
+multiplicative/delta adjustment instead of substituting outright (see
+[Method comparison](#method-comparison) above), which is exactly what lets
+them exceed the reference's own observed range. This is a genuine,
+verified trade-off, not a reason to prefer EQM outright: the same
+substitution property is what makes EQM discard more of the raw forecast's
+own signal in the bulk of the distribution (Section 10's method
+comparison). Which matters more -- tail safety or preserving the raw
+signal -- depends on the downstream use case.
+
+**Revised practical takeaway:** the corrected upper tail is unreliable
+domain-wide, not just at the one pixel originally investigated -- this
+remains a real, open limitation for QDM and DQM, not a resolved one.
 """
 )
 

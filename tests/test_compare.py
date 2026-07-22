@@ -140,6 +140,37 @@ def test_comparison_summary_crpss_raw_baseline_is_zero_by_definition(method_eval
     assert float(summary["jjas_crpss"].sel({"method": "qdm"})) == pytest.approx(0.3)
 
 
+def test_comparison_summary_mask_restricts_pixel_metrics_but_not_spell_bias(tmp_path):
+    """Regression/feature test for the `mask` parameter added to support an
+    Ethiopia-clipped method comparison: pixel-level metrics (e.g. daily_mbe)
+    must be masked-mean, but spell-length bias -- read from domain-pooled
+    npz samples that can't be retroactively masked -- must stay unchanged.
+    """
+    eval_dir = tmp_path / "qdm" / "evaluation"
+    eval_dir.mkdir(parents=True)
+
+    # top row (lat=1) = 10.0, bottom row (lat=2) = 0.0 -- masking to just the
+    # top row should change the domain mean from 5.0 (unmasked) to 10.0.
+    varying_mbe = xr.DataArray([[10.0, 10.0], [0.0, 0.0]], dims=("lat", "lon"), coords={"lat": LAT, "lon": LON})
+    mask = xr.DataArray([[True, True], [False, False]], dims=("lat", "lon"), coords={"lat": LAT, "lon": LON})
+
+    daily = xr.Dataset({"raw_mbe": varying_mbe, "raw_pbias": _map(20.0), "raw_rmse": _map(5.0), "wet_day_freq_bias_raw": _map(-0.01), "corrected_mbe": varying_mbe, "corrected_pbias": _map(2.0), "corrected_rmse": _map(4.5), "wet_day_freq_bias_corrected": _map(-0.05)})
+    daily.to_netcdf(eval_dir / "daily_deterministic.nc")
+    xr.Dataset({"raw_rmse": _map(100.0), "corrected_rmse": _map(45.0), "raw_acc": _map(0.25), "corrected_acc": _map(0.20)}).to_netcdf(eval_dir / "jjas_deterministic_and_skill.nc")
+    category = xr.DataArray(["below", "near", "above"], dims="category", name="category")
+    xr.Dataset({"raw_roc_skill_score": xr.concat([_map(0.2)] * 3, dim=category), "corrected_roc_skill_score": xr.concat([_map(0.2)] * 3, dim=category), "crpss": _map(0.3)}).to_netcdf(eval_dir / "jjas_probabilistic.nc")
+    np.savez(eval_dir / "spell_lengths.npz", obs_wet=np.array([2.0]), raw_wet=np.array([5.0]), corrected_wet=np.array([2.5]), obs_dry=np.array([6.0]), raw_dry=np.array([13.0]), corrected_dry=np.array([7.0]))
+
+    dirs = {"qdm": eval_dir}
+    unmasked = comparison_summary(dirs)
+    masked = comparison_summary(dirs, mask=mask)
+
+    assert float(unmasked["daily_mbe"].sel({"method": "qdm"})) == pytest.approx(5.0)
+    assert float(masked["daily_mbe"].sel({"method": "qdm"})) == pytest.approx(10.0)
+    # spell bias is unaffected by mask -- it isn't a pixel-level field
+    assert float(masked["wet_spell_bias"].sel({"method": "qdm"})) == pytest.approx(float(unmasked["wet_spell_bias"].sel({"method": "qdm"})))
+
+
 def test_comparison_summary_spell_bias_is_offset_from_obs_mean(method_eval_dirs):
     """corrected_wet_spell_mean=2.5 vs obs_wet mean=2.0 -> bias = +0.5.
     raw_wet mean=5.0 vs obs_wet mean=2.0 -> raw bias = +3.0.

@@ -61,9 +61,21 @@ def _spell_length_bias(eval_dir: Path) -> tuple[float, float, float, float]:
     )
 
 
-def comparison_summary(method_eval_dirs: dict[str, Path]) -> xr.Dataset:
+def _masked_mean(da: xr.DataArray, mask: xr.DataArray | None) -> xr.DataArray:
+    return da.where(mask).mean() if mask is not None else da.mean()
+
+
+def comparison_summary(method_eval_dirs: dict[str, Path], mask: xr.DataArray | None = None) -> xr.Dataset:
     """method_eval_dirs: {method_name: path to that method's evaluation/ dir},
     in the order methods should appear along the resulting "method" dimension.
+
+    `mask`: optional (lat, lon) boolean DataArray (e.g. from
+    verify.boundary.load_country_mask) to restrict every *pixel-level*
+    metric's domain mean to, e.g. Ethiopia only. The two spell-length
+    metrics can't be restricted this way -- spell_lengths.npz already holds
+    domain-pooled samples from `sbc-qdm evaluate` (see spells.py), so masking
+    here would need re-scanning the full 33-year record, not just re-averaging
+    already-computed output -- they stay domain-wide regardless of `mask`.
     """
     rows = []
     method_names = []
@@ -78,14 +90,14 @@ def comparison_summary(method_eval_dirs: dict[str, Path]) -> xr.Dataset:
         if raw_row is None:
             raw_row = xr.Dataset(
                 {
-                    "daily_mbe": daily["raw_mbe"].mean(),
-                    "daily_pbias": daily["raw_pbias"].mean(),
-                    "daily_rmse": daily["raw_rmse"].mean(),
-                    "wet_day_freq_bias": daily["wet_day_freq_bias_raw"].mean(),
-                    "jjas_rmse": jjas["raw_rmse"].mean(),
-                    "jjas_crpss": xr.zeros_like(jjas_prob["crpss"].mean()),  # CRPSS is skill-vs-raw by definition
-                    "jjas_acc": jjas["raw_acc"].mean(),
-                    "jjas_roc_skill": jjas_prob["raw_roc_skill_score"].sel(category="above").mean(),
+                    "daily_mbe": _masked_mean(daily["raw_mbe"], mask),
+                    "daily_pbias": _masked_mean(daily["raw_pbias"], mask),
+                    "daily_rmse": _masked_mean(daily["raw_rmse"], mask),
+                    "wet_day_freq_bias": _masked_mean(daily["wet_day_freq_bias_raw"], mask),
+                    "jjas_rmse": _masked_mean(jjas["raw_rmse"], mask),
+                    "jjas_crpss": xr.zeros_like(_masked_mean(jjas_prob["crpss"], mask)),  # CRPSS is skill-vs-raw by definition
+                    "jjas_acc": _masked_mean(jjas["raw_acc"], mask),
+                    "jjas_roc_skill": _masked_mean(jjas_prob["raw_roc_skill_score"].sel(category="above"), mask),
                     "wet_spell_bias": xr.DataArray(raw_wet_spell),
                     "dry_spell_bias": xr.DataArray(raw_dry_spell),
                 }
@@ -93,14 +105,14 @@ def comparison_summary(method_eval_dirs: dict[str, Path]) -> xr.Dataset:
 
         row = xr.Dataset(
             {
-                "daily_mbe": daily["corrected_mbe"].mean(),
-                "daily_pbias": daily["corrected_pbias"].mean(),
-                "daily_rmse": daily["corrected_rmse"].mean(),
-                "wet_day_freq_bias": daily["wet_day_freq_bias_corrected"].mean(),
-                "jjas_rmse": jjas["corrected_rmse"].mean(),
-                "jjas_crpss": jjas_prob["crpss"].mean(),
-                "jjas_acc": jjas["corrected_acc"].mean(),
-                "jjas_roc_skill": jjas_prob["corrected_roc_skill_score"].sel(category="above").mean(),
+                "daily_mbe": _masked_mean(daily["corrected_mbe"], mask),
+                "daily_pbias": _masked_mean(daily["corrected_pbias"], mask),
+                "daily_rmse": _masked_mean(daily["corrected_rmse"], mask),
+                "wet_day_freq_bias": _masked_mean(daily["wet_day_freq_bias_corrected"], mask),
+                "jjas_rmse": _masked_mean(jjas["corrected_rmse"], mask),
+                "jjas_crpss": _masked_mean(jjas_prob["crpss"], mask),
+                "jjas_acc": _masked_mean(jjas["corrected_acc"], mask),
+                "jjas_roc_skill": _masked_mean(jjas_prob["corrected_roc_skill_score"].sel(category="above"), mask),
                 "wet_spell_bias": xr.DataArray(corrected_wet_spell),
                 "dry_spell_bias": xr.DataArray(corrected_dry_spell),
             }

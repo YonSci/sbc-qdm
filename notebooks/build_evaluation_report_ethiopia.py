@@ -739,9 +739,116 @@ region.
 # ----------------------------------------------------------------------
 md(
     """
-## 10. Summary (Ethiopia only)
+## 10. Method comparison (Ethiopia only)
+
+The full-domain report's method-comparison section (Section 10 there) runs
+6 alternative bias-correction methods against QDM. This section restricts
+that same comparison to Ethiopia, reusing each method's already-computed
+`sbc-qdm evaluate` output -- no recomputation -- by passing `eth_mask` into
+`comparison_summary()`. The two spell-length metrics can't be restricted
+this way (they're domain-pooled samples already, see the caveat on
+Sections 3-4) and are shown as their original full-domain values, clearly
+marked in the table below.
+"""
+)
+code(
+    """
+from sbc_qdm.verify.compare import HEADLINE_METRICS, SKILL_METRICS, comparison_summary, plot_method_comparison
+
+COMPARISON_DIR = OUTPUT_DIR / "method_comparison"
+ALL_METHODS = ["qdm", "linear_scaling", "delta_change", "variance_scaling", "power_transformation", "empirical_quantile_mapping", "detrended_quantile_mapping"]
+method_eval_dirs = {
+    m: (OUTPUT_DIR if m == "qdm" else OUTPUT_DIR / "methods" / m) / "evaluation"
+    for m in ALL_METHODS
+}
+
+summary_eth = comparison_summary(method_eval_dirs, mask=eth_mask)
+plot_method_comparison(summary_eth, FIGURES_DIR / "comparison_ethiopia.png")
+show(FIGURES_DIR / "comparison_ethiopia.png")
+
+rows = []
+for m in ["raw", *ALL_METHODS]:
+    row = summary_eth.sel({"method": m})
+    rows.append({title: float(row[var]) for var, title in HEADLINE_METRICS + SKILL_METRICS} | {"method": m})
+pd.DataFrame(rows).set_index("method")
+"""
+)
+md(
+    """
+**Reading it against the full-domain comparison:** the same broad pattern
+holds -- Delta Change and Variance Scaling leave the most residual bias,
+Linear Scaling remains competitive on aggregate RMSE/CRPSS, and the
+skill-metric weaknesses (ACC drop, flat ROC skill) persist for every method,
+Ethiopia-restricted or not. Where numbers differ from the full-domain
+table, it's the same kind of shift already documented in Section 10's
+"what's genuinely different for Ethiopia" summary below: proportionally
+smaller raw bias and higher wet-day frequency throughout, since the
+domain's driest, most-biased pixels sit disproportionately outside
+Ethiopia's border.
+"""
+)
+code(
+    """
+from sbc_qdm.verify.compare import mbe_maps, plot_method_comparison_maps, roc_skill_maps, wet_day_freq_bias_maps
+
+mbe_fields, mbe_raw = mbe_maps(method_eval_dirs)
+mbe_fields_eth = {m: f.where(eth_mask) for m, f in mbe_fields.items()}
+plot_method_comparison_maps(mbe_fields_eth, FIGURES_DIR / "comparison_maps_mbe_ethiopia.png", "Mean Bias Error", "mm/day", raw_field=mbe_raw.where(eth_mask))
+show(FIGURES_DIR / "comparison_maps_mbe_ethiopia.png")
+"""
+)
+md(
+    """
+Delta Change and Variance Scaling's residual wet bias, concentrated in the
+northwest/central highlands in the full-domain map, sits almost entirely
+within Ethiopia's border -- consistent with Section 9's finding that the
+highlands' systematic wet bias is itself mostly an Ethiopia-interior
+phenomenon.
+"""
+)
+code(
+    """
+wet_freq_fields, wet_freq_raw = wet_day_freq_bias_maps(method_eval_dirs)
+wet_freq_fields_eth = {m: f.where(eth_mask) for m, f in wet_freq_fields.items()}
+plot_method_comparison_maps(wet_freq_fields_eth, FIGURES_DIR / "comparison_maps_wet_day_freq_ethiopia.png", "Wet-day frequency bias", "", raw_field=wet_freq_raw.where(eth_mask))
+show(FIGURES_DIR / "comparison_maps_wet_day_freq_ethiopia.png")
+"""
+)
+md(
+    """
+Same overcorrection-vs-undercorrection split as the full-domain map: QDM,
+EQM, DQM, and Power Transformation trend blue (rain rarer than CHIRPS)
+across most of Ethiopia; Linear Scaling and Delta Change leave the original
+too-wet patch largely intact instead.
+"""
+)
+code(
+    """
+roc_fields = roc_skill_maps(method_eval_dirs)
+roc_fields_eth = {m: f.where(eth_mask) for m, f in roc_fields.items()}
+plot_method_comparison_maps(roc_fields_eth, FIGURES_DIR / "comparison_maps_roc_skill_ethiopia.png", "JJAS ROC skill, above-normal", "")
+show(FIGURES_DIR / "comparison_maps_roc_skill_ethiopia.png")
+"""
+)
+md(
+    """
+Detrended Quantile Mapping's localized ROC-skill dip (full-domain report,
+Section 10) is centered around 8.6N, 38.9E -- inside Ethiopia -- so it's
+visible here too, not diluted away by restricting to Ethiopia's borders.
+"""
+)
+
+# ----------------------------------------------------------------------
+md(
+    """
+## 11. Summary (Ethiopia only)
 
 **What's the same as the full-domain report:**
+- Section 10's method comparison holds up Ethiopia-restricted: Delta
+  Change/Variance Scaling still leave the most residual bias, Linear
+  Scaling is still competitive on aggregate RMSE/CRPSS, and Detrended
+  Quantile Mapping's ACC/ROC-skill dip -- centered inside Ethiopia's
+  border -- is fully visible rather than diluted away
 - QDM removes systematic bias just as thoroughly within Ethiopia (PBIAS
   +14.5% -> -1.9%; JJAS-total RMSE cut ~51%; RPSS/BSS improve substantially
   while ROC skill barely moves -- the same calibration-not-discrimination

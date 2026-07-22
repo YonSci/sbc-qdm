@@ -719,22 +719,60 @@ is currently descriptive only — the clamping behavior comes from
 `numpy.interp`'s hardcoded default, not from that field actually being read
 anywhere in the code.
 
-A quick domain-wide scan (comparing each pixel's 2026 corrected max, across
-all months/members, against CHIRPS' historical max at that same pixel/month)
-still finds several hundred pixels per month where the corrected max exceeds
-the historical one. That is **not**, on its own, evidence the fix is
-incomplete: 2026's corrected forecast has 25 ensemble members × ~30 days per
-month (750 samples) against CHIRPS' 33 single yearly values per month, so
-some number of new-record values are expected from sample-size alone, not
-necessarily from residual clamping. Distinguishing genuine residual overshoot
-from this sampling effect would need a more careful analysis (e.g. comparing
-the *old* grid's exceedance count/magnitude against the *new* grid's, pixel
-by pixel) than has been done here — flagged as a follow-up, not resolved.
+**The follow-up this section previously flagged (but hadn't done) is now
+done, and it changes the conclusion.** Searching the whole domain for the
+single biggest *absolute* corrected value (as above) is the wrong search:
+it's dominated by wet regions where large absolute numbers are normal. The
+right search is the worst *ratio* of corrected-max to CHIRPS' own historical
+max at that same pixel/month, domain-wide. That search finds a
+**genuinely severe, unresolved case the tail-quantile fix does nothing
+for**: at lat 14.625°N, lon 47.375°E — a very dry pixel where CHIRPS' own
+May record across 33 years never exceeds 7.8mm (99th percentile: 4.8mm,
+mean: 0.25mm/day) — an outlier raw ECMWF value of 68.07mm gets corrected
+down to 32.4mm, still **4.17x** CHIRPS' historical max there. This is the
+same clamping mechanism as before, just surfacing as a large *relative*
+overshoot in a dry region instead of a large *absolute* one in a wet
+region — the tail-quantile fix helps at the specific wet pixel checked
+above, but does not generalize to every pixel, and this dry-region case is
+worse in relative terms than the wet-region case ever was. **Revised
+practical takeaway: the corrected upper tail is unreliable domain-wide, not
+just at one investigated pixel — this is a real, open limitation, not a
+resolved one.**
+
+This was checked against the two other quantile-mapping methods too, since
+[Method comparison](#method-comparison) added them to this pipeline after
+the above was written. Both EQM and DQM share QDM's exact `numpy.interp`
+clamping mechanism and the same tail-quantile grid, so the same question
+applies to them:
+
+| Method | Worst overshoot ratio (corrected max ÷ CHIRPS historical max) | Location |
+|---|---|---|
+| QDM | **4.17x** | lat 14.625°N, lon 47.375°E (May) |
+| Empirical Quantile Mapping (EQM) | **1.00x — no overshoot** | same pixel |
+| Detrended Quantile Mapping (DQM) | **2.92x** | lat 5.375°N, lon 43.375°E (September, a different pixel) |
+
+EQM's 1.00x at the *exact* pixel where QDM overshoots by 4.17x is not a
+coincidence: EQM directly substitutes the reference's own value at the
+estimated quantile, rather than multiplying the raw value by a ratio, so it
+is structurally bounded by whatever CHIRPS itself has actually recorded —
+it cannot invent a value CHIRPS has never shown, by construction. QDM and
+DQM both apply a multiplicative/delta adjustment to the raw value instead of
+substituting outright (see [Method comparison](#method-comparison) for what
+each method actually does), which is precisely what lets them produce
+values outside the reference's own observed range. This is a genuine,
+verified trade-off: EQM is *safer* in the extreme tail specifically because
+it discards the raw forecast's own magnitude at that quantile (the same
+property [Method comparison](#method-comparison) already flagged as EQM's
+weakness relative to QDM/DQM in the *bulk* of the distribution). Which
+matters more — tail safety or preserving the raw signal — depends on the
+downstream use case; this pipeline doesn't take a position on that trade-off
+for you.
 
 The full 33-year cross-validation, the 2026 operational forecast, and the
-evaluation suite have now been re-run with this fix (see [Full results](#full-results) — those numbers already reflect the new quantile grid); the two
-evaluation notebooks still need rebuilding against the fresh output, which
-hasn't happened yet as of this writing.
+evaluation suite have all been re-run with the tail-quantile fix (see
+[Full results](#full-results) — those numbers already reflect the new
+quantile grid), and both evaluation notebooks have been rebuilt against the
+fresh output, including this extreme-tail follow-up.
 
 ## Rebuilding the CHIRPS reference
 
@@ -786,13 +824,21 @@ doesn't accidentally reintroduce them:
 ## Repository layout
 
 ```
-config/domain.yaml          Paths, bbox, ensemble/QDM parameters
+config/domain.yaml          Paths, bbox, ensemble/QDM parameters, methods.compare list
 src/sbc_qdm/
   config.py                 Loads domain.yaml, resolves paths
   io.py                     load_chirps_reference(), load_ecmwf_year/hindcast/operational()
   preprocess.py              De-accumulation, unit conversion, land/water masking
   regrid.py                  Bilinear ECMWF -> CHIRPS regrid (dask-chunked)
+  chunking.py                 Shared memory-bounded dask chunking helpers (rechunk_for_grouping, sample_dims)
   qdm.py                     Per-month multiplicative QDM: train/apply/cross-validate/operational
+  methods/                     The 6 alternative bias-correction methods compared against QDM (see "Method comparison" above)
+    linear_scaling.py            Multiplicative mean-only correction
+    delta_change.py               Additive mean-only correction
+    variance_scaling.py            Delta Change + spread correction
+    power_transformation.py        Fitted-exponent mean + CV correction
+    empirical_quantile_mapping.py   Direct quantile substitution
+    detrended_quantile_mapping.py    EQM + target-period mean preservation
   pipeline.py                 Composes io -> preprocess -> regrid into ready-to-use arrays
   validate.py                 Bias maps, wet-day frequency, CRPS/CRPSS, rank histogram
   viz.py                       Spatial/distributional figures from a diagnostics dataset
@@ -805,12 +851,14 @@ src/sbc_qdm/
     probabilistic.py             CRPS/CRPSS, RPSS, Brier Score/BSS, ROC
     calibration.py                Reliability diagrams, spread-skill ratio
     spatial.py                    Spatial pattern correlation, spatial RMSE
+    compare.py                     Cross-method comparison summary + bar chart + spatial map grids (see "Method comparison" above)
     viz.py / run.py                Figures + orchestration for the whole suite
     boundary.py                    Country-shapefile clipping (geopandas + shapely.vectorized)
-  cli.py                       train | cross-validate | cross-validate-fold | apply | validate | plot-diagnostics | evaluate
+  cli.py                       train | cross-validate | cross-validate-fold | apply | validate | plot-diagnostics | evaluate | compare-methods
 notebooks/                    Evaluation report notebooks + the scripts that build them
 tests/                        Unit tests (synthetic) + integration tests (require data/)
-output/                       All CLI outputs land here, including output/figures/ and output/evaluation/
+docs/figures/                 Figures embedded in this README (committed, unlike output/ which is gitignored)
+output/                       All CLI outputs land here, including output/figures/, output/evaluation/, output/methods/, and output/method_comparison/
 ```
 
 ## Testing & CI
@@ -825,6 +873,14 @@ Two kinds of tests, split by whether they need the real (uncommitted, ~2.4GB)
 - `tests/test_verify.py` — synthetic, hand-constructed arrays with known
   expected outputs, covering all 9 `verify/` modules. No dependency on
   `data/`, runs in a couple of seconds.
+- `tests/test_methods.py` — same synthetic-array approach, covering the
+  6 alternative bias-correction methods in `src/sbc_qdm/methods/`.
+- `tests/test_compare.py` — same approach again, for `verify/compare.py`
+  (the cross-method comparison summary/figures): hand-built per-method
+  `evaluation/` directories with known domain-mean values, including a
+  regression test for the `.sel(method=...)` vs xarray's reserved `method=`
+  kwarg collision that silently no-op'd a slice during this feature's
+  development.
 - `tests/test_io_preprocess.py` / `tests/test_regrid_qdm.py` — integration
   checks against the real project data files, marked `requires_data` (see
   `pyproject.toml`'s `[tool.pytest.ini_options]`). Skip these with:
