@@ -897,7 +897,154 @@ more muted in the northeast.
 # ----------------------------------------------------------------------
 md(
     """
-## 10. Summary
+## 10. Method comparison: is QDM worth its complexity?
+
+Every section above evaluates QDM in isolation. This section runs the
+*identical* leave-one-year-out cross-validation and evaluation pipeline
+through 6 alternative bias-correction methods -- same data, same metrics,
+same domain-mean aggregation -- via `sbc-qdm compare-methods`, so the
+comparison is apples-to-apples rather than borrowed from different papers'
+different setups.
+
+| Method | Idea |
+|---|---|
+| **Linear Scaling** | One multiplicative ratio per pixel/month (Lenderink et al. 2007) -- corrects only the mean. |
+| **Delta Change (DC)** | The additive counterpart to Linear Scaling -- a difference instead of a ratio. |
+| **Variance Scaling** | Delta Change plus a spread correction (ratio of standard deviations after mean removal; Chen et al. 2011). |
+| **Power Transformation** | Corrects mean and coefficient of variation via a fitted exponent (Leander & Buishand 2007). |
+| **Empirical Quantile Mapping (EQM)** | Substitutes the raw value with the reference's value at the same quantile. |
+| **Detrended Quantile Mapping (DQM)** | Cannon et al. (2015)'s refinement of EQM -- normalizes by the target period's own mean before mapping, preserving signal EQM discards. |
+| **QDM** (this project's default) | Cannon et al. (2015) -- maps the ratio/delta at a given quantile onto the raw value, combining EQM's shape correction with DC's signal-preservation. |
+
+See [`src/sbc_qdm/methods/`](../src/sbc_qdm/methods/) for full implementations.
+"""
+)
+
+# ----------------------------------------------------------------------
+code(
+    """
+from sbc_qdm.verify.compare import HEADLINE_METRICS, SKILL_METRICS, plot_method_comparison
+
+COMPARISON_DIR = OUTPUT_DIR / "method_comparison"
+summary = xr.open_dataset(COMPARISON_DIR / "comparison_summary.nc")
+
+plot_method_comparison(summary, COMPARISON_DIR / "comparison.png")
+show(COMPARISON_DIR / "comparison.png")
+
+methods = [m for m in summary["method"].values.tolist() if m != "raw"]
+rows = []
+for m in ["raw", *methods]:
+    row = summary.sel({"method": m})
+    rows.append({title: float(row[var]) for var, title in HEADLINE_METRICS + SKILL_METRICS} | {"method": m})
+pd.DataFrame(rows).set_index("method")
+"""
+)
+
+# ----------------------------------------------------------------------
+md(
+    """
+**Top row (bias metrics):** every method predictably improves on raw here.
+Delta Change and Variance Scaling leave the most residual bias (PBIAS
++18.3% and +12.5%, still over half of raw's +31.8%) -- consistent with
+correcting the mean/spread of the whole distribution at once rather than
+quantile-by-quantile. Linear Scaling actually posts the *best* JJAS-total
+RMSE and CRPSS, edging out QDM -- not a knock against QDM, since these are
+aggregate mean-focused scores, exactly where a mean-correcting method
+should do well and exactly the scores that don't capture what QDM buys
+elsewhere (wet-day frequency, distribution shape, the extreme-tail behavior
+in Section 8.1).
+
+**Bottom row (skill metrics) -- checking whether the other 6 methods share
+QDM's known weaknesses, not just where every method looks fine:** ROC skill
+and ACC both drop for every method, not just QDM -- Detrended Quantile
+Mapping shows a distinctly larger drop than the rest (ACC 0.148 vs the
+0.19-0.21 range everywhere else), concentrated in one small region rather
+than spread evenly (see the spatial map below), flagged here as unexplained
+rather than investigated further. QDM/EQM/DQM's much better wet-spell bias
+(+0.6 days vs +1.5 to +2.9 days for everyone else) is a side effect of
+`adapt_freq`'s wet-day reclassification, not persistence modeling -- their
+dry-spell bias is simultaneously worse than raw's own (+7.7-7.9 vs raw's
++7.49), a trade-off the wet-spell number alone doesn't reveal.
+"""
+)
+
+# ----------------------------------------------------------------------
+code(
+    """
+from sbc_qdm.verify.compare import mbe_maps, plot_method_comparison_maps, roc_skill_maps, wet_day_freq_bias_maps
+
+method_eval_dirs = {
+    m: (OUTPUT_DIR if m == "qdm" else OUTPUT_DIR / "methods" / m) / "evaluation"
+    for m in methods
+}
+
+mbe_fields, mbe_raw = mbe_maps(method_eval_dirs)
+plot_method_comparison_maps(mbe_fields, COMPARISON_DIR / "comparison_maps_mbe.png", "Mean Bias Error", "mm/day", raw_field=mbe_raw)
+show(COMPARISON_DIR / "comparison_maps_mbe.png")
+"""
+)
+
+# ----------------------------------------------------------------------
+md(
+    """
+Delta Change and Variance Scaling's residual wet bias concentrates in
+almost exactly the same northwest/central region where raw ECMWF's own wet
+bias was worst, while QDM/Linear Scaling/EQM/DQM/Power Transformation all
+show a visually flat, near-zero residual across the whole domain. All these
+methods fit a correction per pixel per month, so it isn't spatial
+resolution -- verified against actual raw-ECMWF year-to-year variability,
+it's specifically the additive methods (a fixed absolute delta that doesn't
+scale with a held-out year's own magnitude) generalizing worst in exactly
+the wettest, most variable pixels.
+"""
+)
+
+# ----------------------------------------------------------------------
+code(
+    """
+wet_freq_fields, wet_freq_raw = wet_day_freq_bias_maps(method_eval_dirs)
+plot_method_comparison_maps(wet_freq_fields, COMPARISON_DIR / "comparison_maps_wet_day_freq_bias.png", "Wet-day frequency bias", "", raw_field=wet_freq_raw)
+show(COMPARISON_DIR / "comparison_maps_wet_day_freq_bias.png")
+"""
+)
+
+# ----------------------------------------------------------------------
+md(
+    """
+QDM, EQM, DQM, and Power Transformation turn deep blue across most of the
+domain -- they don't just fix raw's wet-day over-frequency, they overshoot
+it, making rain rarer than CHIRPS itself almost everywhere. Linear Scaling
+and Delta Change undershoot instead, leaving raw's original too-wet patch
+largely intact. Neither is obviously better; it means QDM's better
+domain-mean number partly reflects overcorrecting more *uniformly*, not
+being closer to correct in most places.
+"""
+)
+
+# ----------------------------------------------------------------------
+code(
+    """
+roc_fields = roc_skill_maps(method_eval_dirs)
+plot_method_comparison_maps(roc_fields, COMPARISON_DIR / "comparison_maps_roc_skill.png", "JJAS ROC skill, above-normal", "")
+show(COMPARISON_DIR / "comparison_maps_roc_skill.png")
+"""
+)
+
+# ----------------------------------------------------------------------
+md(
+    """
+Mostly similar red (positive) patterns across every method -- except
+Detrended Quantile Mapping's visibly darker blue patch around 8.6N, 38.9E,
+where its ROC skill (0.087 regional mean) sits far below both its own
+domain mean (0.211) and QDM's regional mean there (0.217). Consistent with
+the domain-mean table above, and localized rather than uniform.
+"""
+)
+
+# ----------------------------------------------------------------------
+md(
+    """
+## 11. Summary
 
 **What QDM fixes well:**
 - Systematic mean bias, at every temporal scale (daily PBIAS +32% -> -2.5%;
@@ -908,18 +1055,26 @@ md(
 **What it doesn't fix -- by design, since it's a purely marginal correction:**
 - Daily RMSE (dominated by unpredictable timing error, ~1.4% improvement only)
 - Ensemble-mean daily variance and tercile-discrimination (ROC skill) --
-  essentially unchanged before/after
-- Anomaly correlation (ACC) -- actually drops slightly (0.242 -> 0.202)
-- Wet/dry spell persistence -- barely changed; CHIRPS' sharper 1-day wet-spell
-  peak is not reproduced
+  essentially unchanged before/after, and not a QDM-specific issue: every
+  method in Section 10 shows a similar ROC skill/ACC drop, some worse
+- Wet/dry spell persistence -- QDM's wet-spell bias improves substantially,
+  but that's a side effect of the wet-day-frequency correction reclassifying
+  marginal drizzle days, not genuine sequencing/persistence modeling; its
+  dry-spell bias gets slightly worse at the same time
 - Extreme (Q95+) quantiles -- amplified *beyond* both the raw forecast and
   CHIRPS' own observed range; treat the corrected upper tail with caution
+
+**Is a simpler method better?** Not clearly -- Linear Scaling wins on
+aggregate mean-focused scores (JJAS RMSE, CRPSS) but leaves the same
+skill-metric weaknesses QDM has, and quantile-mapping's overcorrected
+wet-day frequency is arguably a different flaw, not a smaller one, than
+Delta Change/Variance Scaling's undercorrected residual bias.
 
 **Bottom line:** the correction is genuinely effective and validated under
 honest leave-one-year-out cross-validation, but "bias-corrected" should not
 be read as "corrected in every respect" -- this evaluation suite exists
 precisely to make clear which dimensions of forecast quality improved and
-which didn't.
+which didn't, for QDM and for every alternative checked against it.
 """
 )
 

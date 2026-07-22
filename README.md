@@ -191,11 +191,21 @@ sbc-qdm apply              # produce the deployable, bias-corrected operational 
 ```
 
 Each step's output feeds the next; see [CLI reference](#cli-reference) for
-what each one actually needs as input and produces.
+what each one actually needs as input and produces. If you want to check
+whether QDM is actually worth its complexity against 6 simpler/alternative
+methods first, run `sbc-qdm compare-methods` instead — see
+[Method comparison](#method-comparison).
 
 ## CLI reference
 
 All commands read `config/domain.yaml` by default (`--config` to override).
+Every command below also accepts `--method` (default `qdm`) to run any of
+the 7 [Method comparison](#method-comparison) methods standalone instead of
+going through `compare-methods` — e.g. `sbc-qdm cross-validate --method
+linear_scaling`. Output for any method other than `qdm` lands under
+`output/methods/{method}/` instead of directly under `output/`, so
+different methods' results never clobber each other or QDM's own
+(backward-compatible) top-level layout.
 
 ### `sbc-qdm train`
 
